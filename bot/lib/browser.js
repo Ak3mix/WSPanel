@@ -42,10 +42,14 @@ function defaultRegQuery(exe) {
 
 const expandWinEnv = (s, env) => s.replace(/%([^%]+)%/g, (all, k) => env[k] ?? env[k.toUpperCase()] ?? all);
 
-function whichAll(names, env, isExecutable) {
-    const dirs = String(env.PATH || '').split(path.delimiter).filter(Boolean);
+// rutas con el formato del sistema de destino (no del que ejecuta el código)
+const pathFor = (platform) => (platform === 'win32' ? path.win32 : path.posix);
+
+function whichAll(names, env, isExecutable, platform = process.platform) {
+    const P = pathFor(platform);
+    const dirs = String(env.PATH || '').split(P.delimiter).filter(Boolean);
     const out = [];
-    for (const name of names) for (const d of dirs) out.push(path.join(d, name));
+    for (const name of names) for (const d of dirs) out.push(P.join(d, name));
     return out.filter((p) => isExecutable(p));
 }
 
@@ -84,8 +88,9 @@ function candidatePaths({ platform, env, home, regQuery }) {
             ...reg('brave.exe'),
         ]);
     } else if (platform === 'darwin') {
-        const apps = ['/Applications', home && path.join(home, 'Applications')].filter(Boolean);
-        const mac = (app, bin) => apps.map((a) => path.join(a, app, 'Contents', 'MacOS', bin));
+        const P = path.posix;
+        const apps = ['/Applications', home && P.join(home, 'Applications')].filter(Boolean);
+        const mac = (app, bin) => apps.map((a) => P.join(a, app, 'Contents', 'MacOS', bin));
         add('Chrome', mac('Google Chrome.app', 'Google Chrome'));
         add('Chromium', mac('Chromium.app', 'Chromium'));
         add('Edge', mac('Microsoft Edge.app', 'Microsoft Edge'));
@@ -162,7 +167,7 @@ function detectBrowsers({
     };
     for (const c of candidatePaths({ platform, env, home, regQuery })) {
         if (typeof c.path === 'object') {
-            for (const p of whichAll([c.path.which], env, isExecutable)) push(c.name, p, 'PATH');
+            for (const p of whichAll([c.path.which], env, isExecutable, platform)) push(c.name, p, 'PATH');
         } else {
             push(c.name, c.path, 'system');
         }

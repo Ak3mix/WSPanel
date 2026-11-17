@@ -46,7 +46,7 @@ test('Windows: Brave en AppData del usuario', () => {
 });
 
 test('Linux: busca en el PATH y en rutas típicas, en orden Chrome > Chromium > Edge > Brave', () => {
-    const env = { PATH: ['/usr/local/bin', '/usr/bin'].join(path.delimiter) };
+    const env = { PATH: '/usr/local/bin:/usr/bin' }; // PATH de Linux, aunque el test corra en Windows
     const base = { platform: 'linux', env, puppeteerPath: noPuppeteer };
     const exe = only('/usr/bin/chromium', '/opt/microsoft/msedge/msedge', '/usr/local/bin/brave-browser');
     const found = detectBrowsers({ ...base, isExecutable: exe });

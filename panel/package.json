@@ -1,0 +1,15 @@
+{
+  "name": "wspanel",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Orquestador de las instancias del bot (UI Electron pendiente)",
+  "main": "panel-core.js",
+  "scripts": {
+    "headless": "node headless.js",
+    "fake": "node headless.js --fake",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

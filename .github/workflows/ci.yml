@@ -1,0 +1,43 @@
+# Tests en Linux y Windows en cada push y pull request.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Dependencias del bot (con el parche de whatsapp-web.js)
+        working-directory: bot
+        run: npm ci --no-audit --no-fund
+
+      - name: Tests del bot
+        working-directory: bot
+        run: npm test
+
+      - name: Tests del panel
+        working-directory: panel
+        run: npm test

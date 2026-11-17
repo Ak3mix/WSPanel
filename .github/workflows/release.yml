@@ -1,0 +1,117 @@
+# Al crear una etiqueta vX.Y.Z: tests, paquete portable para Windows y Linux,
+# y publicación en GitHub Releases.
+#
+#   git tag v2.1.0 && git push origin v2.1.0
+#
+# También se puede lanzar a mano (Actions → Release → Run workflow) para
+# generar los paquetes como artefactos sin publicar una versión.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión para los paquetes de prueba (no se publica)'
+        required: true
+        default: '0.0.0-prueba'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Paquete ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+          - os: ubuntu-latest
+            name: linux-x64
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node oficial (autónomo): es el que se copia dentro del paquete
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Versión
+        id: v
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then V="${GITHUB_REF_NAME#v}"; else V="${{ github.event.inputs.version }}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Versión: $V"
+
+      - name: Tests
+        shell: bash
+        run: |
+          (cd bot && npm ci --no-audit --no-fund && npm test)
+          (cd panel && npm test)
+
+      - name: Empaquetar
+        shell: bash
+        run: node scripts/package.js --version "${{ steps.v.outputs.version }}" --out dist
+
+      - name: Comprimir (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "WSPanel-${{ steps.v.outputs.version }}-${{ matrix.name }}"
+          Set-Location "dist/$name"
+          7z a -tzip -mx=7 "../$name.zip" WSPanel | Out-Null
+          Get-Item "../$name.zip" | Select-Object Name, Length
+
+      - name: Comprimir (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          name="WSPanel-${{ steps.v.outputs.version }}-${{ matrix.name }}"
+          tar -czf "dist/$name.tar.gz" -C "dist/$name" WSPanel
+          ls -la dist/*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WSPanel-${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publicar en Releases
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Sumas SHA-256
+        working-directory: out
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Crear la versión
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" out/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "WSPanel ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes "Descarga el archivo de tu sistema, descomprímelo y abre WSPanel.vbs (Windows) o ./wspanel (Linux). Necesitas Chrome, Chromium, Edge o Brave instalado. Instrucciones completas en el README."

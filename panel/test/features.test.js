@@ -20,13 +20,16 @@ test('historial: guarda, sobrevive al reinicio, poda lo antiguo e ignora líneas
     const now = () => t;
     const s1 = createHistoryStore({ dataDir, ids: ['personal'], keepDays: 30, now });
     s1.add('personal', { group: 'G1', group_id: '1@g.us', rule: 'T1', text: 'x'.repeat(900) }, t - 40 * DAY);
-    s1.add('personal', { group: 'G1', group_id: '1@g.us', rule: 'T1' }, t - DAY);
+    s1.add('personal', { group: 'G1', group_id: '1@g.us', rule: 'T1', latency_ms: 42, delay_ms: 0 }, t - DAY);
     s1.add('personal', { group: 'G2', group_id: '2@g.us', rule: 'T2' }, t);
     s1.add('personal', { group: 'G1', group_id: '1@g.us', rule: 'T1' }, t);
     fs.appendFileSync(s1.file('personal'), '{roto\n');
 
     const s2 = createHistoryStore({ dataDir, ids: ['personal'], keepDays: 30, now });
     assert.equal(s2.recent('personal').length, 3); // el de hace 40 días y la línea rota fuera
+    assert.equal(s2.recent('personal')[0].latency_ms, 42); // el tiempo de respuesta se conserva
+    assert.equal(s2.recent('personal')[0].delay_ms, 0);
+    assert.ok(!('latency_ms' in s2.recent('personal')[1])); // sin medir = sin campo
     assert.equal(s2.countToday('personal'), 2);
     const st = s2.stats('personal', 7);
     assert.equal(st.days.length, 7);

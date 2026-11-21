@@ -8,7 +8,7 @@ const { FakeClient } = require('../lib/fake-client');
 const G1 = '111@g.us';
 const G2 = '222@g.us';
 
-function setup(cfgOverrides = {}, { lids = { '900@lid': '34600000001@c.us' }, paused = false, now } = {}) {
+function setup(cfgOverrides = {}, { lids = { '900@lid': '34600000001@c.us' }, paused = false, now, clock } = {}) {
     const events = [];
     const protocol = { say: (o) => events.push(o), log: (tag, msg, data) => events.push({ type: 'log', tag, msg, data }), humanLogs: false };
     const client = new FakeClient({ delayMs: 1, lids });
@@ -21,7 +21,7 @@ function setup(cfgOverrides = {}, { lids = { '900@lid': '34600000001@c.us' }, pa
         reply_delay_ms: 0,
         ...cfgOverrides,
     });
-    const bot = createBot({ client, protocol, lid, config, paused, exit: (c) => exits.push(c), sleep: async () => {}, ...(now ? { now } : {}) });
+    const bot = createBot({ client, protocol, lid, config, paused, exit: (c) => exits.push(c), sleep: async () => {}, ...(now ? { now } : {}), ...(clock ? { clock } : {}) });
     const rpc = async (cmd, extra = {}) => {
         const id = String(Math.random());
         await bot.handleRequest({ type: 'rpc', id, cmd, ...extra });
@@ -189,4 +189,21 @@ test('horario: fuera de horario no responde y lo registra', async () => {
     await send(bot, { from: G1, author: '34600000001@c.us', body: 'aeropuerto' });
     assert.equal(events.filter((e) => e.type === 'notification').length, 0);
     assert.ok(events.find((e) => e.tag === 'FILTER' && /Outside schedule/.test(e.msg)));
+});
+
+test('tiempo de respuesta: desde que llega el mensaje hasta que se envía, con la espera desglosada', async () => {
+    const ticks = [1000, 1042]; // llegada, respuesta enviada
+    const a = setup({}, { clock: () => ticks.shift() });
+    await send(a.bot, { from: G1, author: '34600000001@c.us', body: 'aeropuerto' });
+    const n1 = a.events.find((e) => e.type === 'notification');
+    assert.equal(n1.latency_ms, 42);
+    assert.equal(n1.delay_ms, 0);
+    assert.ok(a.events.find((e) => e.tag === 'REPLY' && e.data.latency_ms === 42));
+
+    const ticks2 = [5000.4, 6542.6];
+    const b = setup({ reply_delay_ms: 1500 }, { clock: () => ticks2.shift() });
+    await send(b.bot, { from: G1, author: '34600000001@c.us', body: 'aeropuerto' });
+    const n2 = b.events.find((e) => e.type === 'notification');
+    assert.equal(n2.latency_ms, 1542);
+    assert.equal(n2.delay_ms, 1500);
 });

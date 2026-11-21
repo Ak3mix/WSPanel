@@ -316,7 +316,10 @@ dialog p { margin: 0 0 18px; white-space: pre-line; }
 .sentence .kw.kw-x { background: var(--bad-soft); color: var(--bad); text-decoration: line-through; text-decoration-thickness: 1px; }
 .rule-scope { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 13.5px; }
 .rules-head .btn + .btn { margin-left: 4px; }
-.rule-tag { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--acc); background: var(--acc-soft); border-radius: 6px; padding: 0 6px; }
+.ev-tags { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; }
+.latency { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 0 6px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help; }
+.latency.slow { color: var(--warn); background: var(--warn-soft); }
+.rule-tag { font-size: 11px; font-weight: 700; color: var(--acc); background: var(--acc-soft); border-radius: 6px; padding: 0 6px; }
 
 /* ---------- reglas: editor ---------- */
 .rule-cards { display: grid; gap: 10px; }

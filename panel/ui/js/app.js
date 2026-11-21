@@ -68,6 +68,18 @@ function ago(ts) {
     return new Date(ts).toLocaleDateString();
 }
 
+// Tiempo de respuesta: desde que llegó el mensaje hasta que se envió la respuesta
+const fmtMs = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toLocaleString('es-ES', { maximumFractionDigits: 2 })} s`);
+function latencyBadge(it) {
+    if (!Number.isFinite(it.latency_ms)) return null; // respuestas antiguas, sin medir
+    const delay = Number.isFinite(it.delay_ms) ? it.delay_ms : 0;
+    const work = Math.max(0, it.latency_ms - delay);
+    const title = delay
+        ? `Respondió ${fmtMs(it.latency_ms)} después de recibir el mensaje: ${fmtMs(delay)} de espera configurada + ${fmtMs(work)} de proceso.`
+        : `Respondió ${fmtMs(it.latency_ms)} después de recibir el mensaje.`;
+    return h('span', { class: `latency ${work > 3000 ? 'slow' : ''}`, title, 'aria-label': title }, `⏱ ${fmtMs(it.latency_ms)}`);
+}
+
 // Resalta la keyword dentro del texto original (sin distinguir acentos)
 function highlight(text, kw) {
     if (!kw) return [text];
@@ -262,7 +274,9 @@ function accountColumn(id) {
         if (it.type === 'notification' && it.event === 'auto_reply') {
             return h('div', { class: 'ev-reply' },
                 h('div', { class: 'ev-meta' }, h('span', { class: 'group', text: it.group || it.group_id || 'Grupo' }), '·', fmtTime(it.ts),
-                    it.rule && /^Regla \d+$/.test(it.rule) === false ? h('span', { class: 'rule-tag', text: it.rule }) : null),
+                    h('span', { class: 'ev-tags' },
+                        it.rule && /^Regla \d+$/.test(it.rule) === false ? h('span', { class: 'rule-tag', text: it.rule }) : null,
+                        latencyBadge(it))),
                 h('div', { class: 'bubble in' }, h('span', { class: 'who', text: chatName(id, it.sender) || fmtPhone(it.sender) }),
                     ...(it.text ? highlight(it.text, it.keyword) : [h('i', { class: 'muted', text: `(contenía «${it.keyword}»)` })])),
                 h('div', { class: 'bubble out', text: it.reply }));

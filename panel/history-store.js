@@ -48,6 +48,8 @@ function createHistoryStore({ dataDir, ids, keepDays = 90, maxPerAccount = 50000
             group: ev.group || '', group_id: ev.group_id || '', sender: ev.sender || '',
             keyword: ev.keyword || '', rule: ev.rule || '', reply: ev.reply || '', text: String(ev.text || '').slice(0, 500),
         };
+        if (Number.isFinite(ev.latency_ms)) e.latency_ms = ev.latency_ms; // tiempo de respuesta
+        if (Number.isFinite(ev.delay_ms)) e.delay_ms = ev.delay_ms; // de ello, espera configurada
         arr.push(e);
         if (arr.length > maxPerAccount) arr.splice(0, arr.length - maxPerAccount);
         try {

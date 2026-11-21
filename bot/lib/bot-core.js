@@ -23,7 +23,7 @@ const stackOf = (e) => String((e && e.stack) || '').split('\n').slice(0, 12).map
 const NEEDS_READY = new Set(['FETCH_GROUPS', 'FETCH_CONTACTS', 'SEND_MESSAGE', 'LOGOUT']);
 const VALID_CHAT_ID = /^[\w.-]+@(c\.us|g\.us)$/;
 
-function createBot({ client, protocol, lid, config, paused = false, exit, sleep, now = Date.now, listLimits }) {
+function createBot({ client, protocol, lid, config, paused = false, exit, sleep, now = Date.now, listLimits, clock = () => performance.now() }) {
     const { say, log } = protocol;
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     let cfg = config;
@@ -78,6 +78,7 @@ function createBot({ client, protocol, lid, config, paused = false, exit, sleep,
     // Orden: de lo más barato a lo más caro. Los mensajes que no son de un grupo
     // permitido o no traen keyword se descartan sin tocar el navegador.
     async function handleMessage(msg) {
+        const t0 = clock(); // llegada del mensaje al bot (para medir el tiempo de respuesta)
         if (!msg || msg.fromMe) return;
         const groupId = String(msg.from || '');
         if (!groupId.endsWith('@g.us')) return;
@@ -115,20 +116,24 @@ function createBot({ client, protocol, lid, config, paused = false, exit, sleep,
             return;
         }
 
-        if (cfg.reply_delay_ms > 0) await wait(cfg.reply_delay_ms);
+        const delayMs = cfg.reply_delay_ms;
+        if (delayMs > 0) await wait(delayMs);
         if (isPaused || exiting) return; // pausado durante la espera
 
         const reply = pickReply(rule, lastReply.get(groupId));
         lastReply.set(groupId, reply);
         await msg.reply(reply);
+        // desde que llegó el mensaje hasta que WhatsApp aceptó la respuesta (incluye la espera configurada)
+        const latencyMs = Math.max(0, Math.round(clock() - t0));
         const sender = (lid && lid.cachedPhone(author)) || author;
         const group = await groupName(msg, groupId);
         const ruleName = rule.name || `Regla ${rule.index + 1}`;
-        log('REPLY', 'Auto-reply sent', { group, group_id: groupId, sender, keyword, rule: ruleName });
+        log('REPLY', 'Auto-reply sent', { group, group_id: groupId, sender, keyword, rule: ruleName, latency_ms: latencyMs });
         // incluye el mensaje que disparó la respuesta (solo estos, no el resto del grupo)
         say({
             type: 'notification', event: 'auto_reply', group, group_id: groupId, sender, keyword, reply,
             rule: ruleName, text: String(msg.body || '').slice(0, 500),
+            latency_ms: latencyMs, delay_ms: delayMs,
         });
     }
 

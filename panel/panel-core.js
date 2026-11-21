@@ -97,6 +97,23 @@ function createPanel({ dataDir, botDir, fake = false, managerOptions = {}, brows
     });
     mgr.on('event', (id, ev) => notifier.onEvent(ev, id));
 
+    // registro de errores en disco (logs/<cuenta>.log): sobrevive a los reinicios del panel
+    const errLogDir = path.join(dataDir, 'logs');
+    mgr.on('event', (id, ev) => {
+        const isErr = (ev.type === 'log' && (ev.tag === 'ERROR' || ev.tag === 'STDERR'))
+            || (ev.type === 'status' && ['crashed', 'config_error', 'auth_failure', 'browser_missing'].includes(ev.value));
+        if (!isErr || (ev.tag === 'STDERR' && /DeprecationWarning|trace-deprecation/.test(ev.msg))) return;
+        try {
+            fs.mkdirSync(errLogDir, { recursive: true });
+            const file = path.join(errLogDir, `${id}.log`);
+            try { if (fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + '.1'); } catch { /* no existe aún */ }
+            const line = ev.type === 'status'
+                ? `estado: ${ev.value}${ev.code != null ? ` (código ${ev.code})` : ''}`
+                : `${ev.tag}: ${ev.msg}${ev.data && ev.data.error ? ` — ${ev.data.error}` : ''}${ev.data && ev.data.stack ? '\n    ' + ev.data.stack.split('\n').join('\n    ') : ''}`;
+            fs.appendFileSync(file, `[${new Date().toISOString()}] ${line}\n`);
+        } catch { /* no crítico */ }
+    });
+
     function restartTelegram() {
         tg.stopPolling();
         if (tg.configured) tg.startPolling((text, from) => notifier.handleCommand(text, from));

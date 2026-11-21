@@ -17,6 +17,9 @@ const EXIT = Object.freeze({
     BROWSER_MISSING: 79, // no hay navegador Chromium instalado → no reintentar
 });
 
+// primeras líneas de la traza (para diagnosticar caídas sin inundar el registro)
+const stackOf = (e) => String((e && e.stack) || '').split('\n').slice(0, 12).map((l) => l.trim()).join('\n');
+
 const NEEDS_READY = new Set(['FETCH_GROUPS', 'FETCH_CONTACTS', 'SEND_MESSAGE', 'LOGOUT']);
 const VALID_CHAT_ID = /^[\w.-]+@(c\.us|g\.us)$/;
 
@@ -204,7 +207,7 @@ function createBot({ client, protocol, lid, config, paused = false, exit, sleep,
 
     client.on('message_create', (msg) => {
         handleMessage(msg).catch((e) =>
-            log('ERROR', 'Message handler error', { error: e.message, stack: String(e.stack || '').split('\n')[1] })
+            log('ERROR', 'Message handler error', { error: e.message, stack: stackOf(e) })
         );
     });
 
@@ -289,7 +292,7 @@ function createBot({ client, protocol, lid, config, paused = false, exit, sleep,
             await client.initialize();
         } catch (e) {
             const msg = e && e.message ? e.message : String(e);
-            log('ERROR', 'Initialize failed', { error: msg });
+            log('ERROR', 'Initialize failed', { error: msg, stack: stackOf(e) });
             const isBrowser = /browser was not found|executable|ENOENT|Failed to launch/i.test(msg);
             shutdown(isBrowser ? EXIT.CONFIG : EXIT.ERROR, 'initialize');
         }
@@ -307,4 +310,4 @@ function createBot({ client, protocol, lid, config, paused = false, exit, sleep,
     };
 }
 
-module.exports = { createBot, EXIT };
+module.exports = { createBot, EXIT, stackOf };

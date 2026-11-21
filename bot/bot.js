@@ -19,7 +19,7 @@ const { createProtocol } = require('./lib/protocol');
 const { normalizeConfig, loadConfigFile, watchConfig } = require('./lib/config');
 const { findBrowser, browserWarnings, installHint } = require('./lib/browser');
 const { LidResolver } = require('./lib/lid');
-const { createBot, EXIT } = require('./lib/bot-core');
+const { createBot, EXIT, stackOf } = require('./lib/bot-core');
 
 function getArg(flag, def) {
     const i = process.argv.indexOf(flag);
@@ -116,7 +116,11 @@ function main() {
     process.stdin.on('end', () => bot.shutdown(EXIT.OK, 'stdin closed'));
     process.on('SIGTERM', () => bot.shutdown(EXIT.OK, 'SIGTERM'));
     process.on('SIGINT', () => bot.shutdown(EXIT.OK, 'SIGINT'));
-    process.on('unhandledRejection', (e) => log('ERROR', 'Unhandled rejection', { error: String(e && e.message || e) }));
+    process.on('unhandledRejection', (e) => log('ERROR', 'Unhandled rejection', { error: String(e && e.message || e), stack: stackOf(e) }));
+    process.on('uncaughtException', (e) => {
+        log('ERROR', 'Uncaught exception', { error: String(e && e.message || e), stack: stackOf(e) });
+        bot.shutdown(EXIT.ERROR, 'uncaughtException');
+    });
 
     try {
         watchConfig(configFile, {

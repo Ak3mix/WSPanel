@@ -85,6 +85,11 @@ async function main() {
     console.log('   (el enlace lleva el token de esta sesión; cambia en cada arranque)');
 
     panel.mgr.on('event', (id, ev) => {
+        // errores del bot también en la terminal (y en logs/<cuenta>.log, ver panel-core)
+        if (ev.type === 'log' && (ev.tag === 'ERROR' || (ev.tag === 'STDERR' && !/DeprecationWarning|trace-deprecation/.test(ev.msg)))) {
+            console.log(`[${new Date().toLocaleTimeString()}] [${id}] ${ev.tag}: ${ev.msg}${ev.data && ev.data.error ? ` — ${ev.data.error}` : ''}`);
+            if (ev.data && ev.data.stack) console.log(ev.data.stack.split('\n').map((l) => '      ' + l).join('\n'));
+        }
         if (ev.type === 'status' && ev.value !== 'qr') console.log(`[${new Date().toLocaleTimeString()}] [${id}] ${ev.value}`);
         else if (ev.type === 'qr' && panel.mgr.getStatus(id) !== 'qr') console.log(`[${new Date().toLocaleTimeString()}] [${id}] esperando QR`);
     });

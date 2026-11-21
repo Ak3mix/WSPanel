@@ -68,7 +68,10 @@ fs.rmSync(path.join(botDst, 'node_modules', '.bin'), { recursive: true, force: t
 
 // comprobar que el parche de whatsapp-web.js está aplicado
 const utils = fs.readFileSync(path.join(botDst, 'node_modules', 'whatsapp-web.js', 'src', 'util', 'Injected', 'Utils.js'), 'utf8');
-if (!utils.includes('getMsgKeyId(newMsgKey)')) throw new Error('el parche de whatsapp-web.js NO está aplicado');
+const client = fs.readFileSync(path.join(botDst, 'node_modules', 'whatsapp-web.js', 'src', 'Client.js'), 'utf8');
+if (!utils.includes('getMsgKeyId(newMsgKey)') || !client.includes("window.require?.('WAWebSocketModel')?.Socket?.state")) {
+    throw new Error('el parche de whatsapp-web.js NO está aplicado (o está incompleto)');
+}
 log('parche de whatsapp-web.js aplicado ✓');
 
 // ---------- 3. panel ----------

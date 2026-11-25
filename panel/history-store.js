@@ -50,6 +50,8 @@ function createHistoryStore({ dataDir, ids, keepDays = 90, maxPerAccount = 50000
         };
         if (Number.isFinite(ev.latency_ms)) e.latency_ms = ev.latency_ms; // tiempo de respuesta
         if (Number.isFinite(ev.delay_ms)) e.delay_ms = ev.delay_ms; // de ello, espera configurada
+        if (Number.isFinite(ev.age_ms)) e.age_ms = ev.age_ms; // antigüedad del mensaje al llegar
+        if (ev.delivery && ev.delivery !== 'sent') e.delivery = ev.delivery; // 'unconfirmed'
         arr.push(e);
         if (arr.length > maxPerAccount) arr.splice(0, arr.length - maxPerAccount);
         try {

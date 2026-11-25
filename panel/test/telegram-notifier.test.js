@@ -197,13 +197,13 @@ test('comandos: /status legible, /status@bot, /help y autorización con el id de
     const mgr = fakeMgr();
     let allowed = [];
     const n = new Notifier(fakeTg(), mgr, { getAllowedUserIds: () => allowed });
-    assert.match(await n.handleCommand('/status@MiBot'), /🟢 Personal: conectada · 0 respuestas hoy/);
+    assert.match((await n.handleCommand('/status@MiBot')).text, /🟢 Personal: conectada · 0 respuestas hoy/);
     assert.match(await n.handleCommand('/help'), /\/pause personal\|trabajo\|todos/);
     assert.equal(await n.handleCommand('hola'), null);
     assert.equal(await n.handleCommand('/otro'), null);
     assert.match(await n.handleCommand('/pause personal', { id: 1 }), /En pausa: Personal/);
     assert.equal(mgr.paused.personal, true);
-    assert.match(await n.handleCommand('/status'), /⏸ Personal: conectada · en pausa/);
+    assert.match((await n.handleCommand('/status')).text, /⏸ Personal: conectada · en pausa/);
     assert.match(await n.handleCommand('/pause nadie'), /Uso/);
     allowed = ['7'];
     assert.match(await n.handleCommand('/resume todos', { id: 1 }), /No autorizado.*tu id de Telegram es 1/i);
@@ -258,4 +258,78 @@ test('sin Telegram configurado no se envía nada, pero se cuentan las respuestas
     n.onEvent({ type: 'notification', event: 'auto_reply', group: 'G' }, 'personal');
     assert.equal(msgs.length, 0);
     assert.equal(n.repliesToday('personal'), 1);
+});
+
+// ---------- botones de /status ----------
+
+test('/status trae botones según el estado de cada cuenta', async () => {
+    const mgr = fakeMgr();
+    const st = { personal: 'ready', trabajo: 'stopped' };
+    mgr.getStatus = (id) => st[id];
+    const control = { start: async () => ({ ok: true }), stop: async () => {}, restart: async () => {} };
+    const n = new Notifier(fakeTg(), mgr, { control });
+    const datas = (await n.handleCommand('/status')).keyboard.flat().map((b) => b.data);
+    assert.deepEqual(datas, ['pause:personal', 'restart:personal', 'stop:personal', 'start:trabajo', 'refresh']);
+    mgr.paused.personal = true;
+    st.trabajo = 'crashed';
+    assert.deepEqual(n.statusKeyboard().flat().map((b) => b.data), ['resume:personal', 'restart:personal', 'stop:personal', 'start:trabajo', 'stop:trabajo', 'refresh']);
+    st.trabajo = 'logged_out'; // hace falta QR: no se ofrece conectar desde Telegram
+    assert.ok(!n.statusKeyboard().flat().some((b) => b.data.endsWith(':trabajo')));
+    // sin control (p. ej. modo antiguo) solo pausar/reanudar
+    assert.deepEqual(new Notifier(fakeTg(), mgr).statusKeyboard().flat().map((b) => b.data), ['resume:personal', 'refresh']);
+});
+
+test('pulsar un botón ejecuta la acción, respeta la autorización y devuelve el estado nuevo', async () => {
+    const mgr = fakeMgr();
+    const calls = [];
+    const control = {
+        start: async (id) => { calls.push(['start', id]); return id === 'trabajo' ? { ok: false, reason: 'browser_missing' } : { ok: true }; },
+        stop: async (id) => { calls.push(['stop', id]); },
+        restart: async (id) => { calls.push(['restart', id]); },
+    };
+    let allowed = [];
+    const tg = fakeTg();
+    const n = new Notifier(tg, mgr, { control, getAllowedUserIds: () => allowed });
+    const r = await n.handleCallback('pause:personal', { id: 1 });
+    assert.equal(mgr.paused.personal, true);
+    assert.match(r.toast, /Personal en pausa/);
+    assert.match(r.text, /⏸ Personal/);
+    assert.ok(r.keyboard.flat().some((b) => b.data === 'resume:personal'));
+    n.onEvent({ type: 'paused', value: true }, 'personal');
+    assert.equal(tg.msgs.length, 0, 'sin aviso duplicado de pausa');
+    assert.match((await n.handleCallback('stop:trabajo', { id: 1 })).toast, /Trabajo desconectada/);
+    assert.match((await n.handleCallback('restart:personal', { id: 1 })).toast, /Reiniciando Personal/);
+    assert.match((await n.handleCallback('start:trabajo', { id: 1 })).toast, /no hay navegador/);
+    assert.deepEqual(calls, [['stop', 'trabajo'], ['restart', 'personal'], ['start', 'trabajo']]);
+    assert.match((await n.handleCallback('stop:nadie', { id: 1 })).toast, /desconocida/);
+    allowed = ['7'];
+    const denied = await n.handleCallback('stop:personal', { id: 1 });
+    assert.match(denied.toast, /No autorizado/);
+    assert.equal(denied.text, undefined);
+    assert.equal(calls.length, 3);
+});
+
+test('TelegramService: envía los botones y atiende las pulsaciones (solo del grupo configurado)', async () => {
+    const t = fakeTelegram({ backlog: [] });
+    t.setHook((method) => (['answerCallbackQuery', 'editMessageText'].includes(method) ? ok(true) : null));
+    const tg = new TelegramService(cfg(), { fetchImpl: t.fetchImpl, ...fast });
+    const pressed = [];
+    tg.startPolling(async (text) => (text === '/status' ? { text: 'estado', keyboard: [[{ text: 'Pausar', data: 'pause:personal' }]] } : null),
+        async (data) => { pressed.push(data); return { toast: 'hecho', text: 'estado nuevo', keyboard: [[{ text: 'Reanudar', data: 'resume:personal' }]] }; });
+    await tick();
+    t.push({ update_id: 50, message: { message_id: 9, text: '/status', chat: { id: -1 }, from: { id: 1 } } });
+    await tick(60);
+    assert.deepEqual(t.sent[0].reply_markup, { inline_keyboard: [[{ text: 'Pausar', callback_data: 'pause:personal' }]] });
+    t.push({ update_id: 51, callback_query: { id: 'cq1', data: 'pause:personal', from: { id: 1 }, message: { message_id: 10, chat: { id: -1 } } } });
+    t.push({ update_id: 52, callback_query: { id: 'cq2', data: 'stop:personal', from: { id: 1 }, message: { message_id: 11, chat: { id: -999 } } } });
+    await tick(80);
+    tg.stopPolling();
+    assert.deepEqual(pressed, ['pause:personal'], 'el botón de otro chat no ejecuta nada');
+    const answers = t.calls.filter((c) => c.method === 'answerCallbackQuery').map((c) => c.b);
+    assert.deepEqual(answers, [{ callback_query_id: 'cq1', text: 'hecho' }, { callback_query_id: 'cq2' }]);
+    const edit = t.calls.find((c) => c.method === 'editMessageText').b;
+    assert.equal(edit.message_id, 10);
+    assert.equal(edit.text, 'estado nuevo');
+    assert.equal(edit.reply_markup.inline_keyboard[0][0].callback_data, 'resume:personal');
+    assert.ok(t.calls.some((c) => c.method === 'getUpdates' && (c.b.allowed_updates || []).includes('callback_query')));
 });

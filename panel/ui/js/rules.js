@@ -89,17 +89,22 @@ function rulesSummary(id) {
     const g = c.allowed_groups.length;
     const u = c.allowed_users.length;
     const scope = [
-        'En ', g ? h('span', { class: 'scope', title: c.allowed_groups.map((x) => chatName(id, x) || x).join('\n'),
-            text: g === 1 ? (chatName(id, c.allowed_groups[0]) ? `«${chatName(id, c.allowed_groups[0])}»` : '1 grupo') : `${g} grupos` })
-            : h('span', { class: 'warn', text: 'cualquier grupo' }),
-        u ? [', solo a ', h('span', { class: 'scope', title: c.allowed_users.map((x) => chatName(id, x) || fmtPhone(x)).join('\n'),
-            text: u === 1 ? (chatName(id, c.allowed_users[0]) || fmtPhone(c.allowed_users[0])) : `${u} personas` })] : ', a cualquiera',
+        'En ', g ? hintTrigger({
+            className: 'scope',
+            text: g === 1 ? (chatName(id, c.allowed_groups[0]) ? `«${chatName(id, c.allowed_groups[0])}»` : '1 grupo') : `${g} grupos`,
+            hint: c.allowed_groups.map((x) => chatName(id, x) || x).join('\n'),
+        }) : h('span', { class: 'warn', text: 'cualquier grupo' }),
+        u ? [', solo a ', hintTrigger({
+            className: 'scope',
+            text: u === 1 ? (chatName(id, c.allowed_users[0]) || fmtPhone(c.allowed_users[0])) : `${u} personas`,
+            hint: c.allowed_users.map((x) => chatName(id, x) || fmtPhone(x)).join('\n'),
+        })] : ', a cualquiera',
         '. ',
     ];
     const extra = [
         hasSchedule(c.schedule) ? `Horario: ${scheduleText(c.schedule)}` : null,
         c.reply_delay_ms ? `espera ${(c.reply_delay_ms / 1000).toLocaleString()} s` : 'al instante',
-        c.cooldown_ms ? `máx. 1 cada ${Math.round(c.cooldown_ms / 1000)} s por grupo` : null,
+        c.cooldown_ms ? `máx. 1 cada ${Math.round(c.cooldown_ms / 1000)} s ${c.cooldown_scope === 'global' ? 'en total' : 'por grupo'}` : null,
     ].filter(Boolean).join(' · ');
     append(box, [list, h('div', { class: 'rule-scope' }, ...scope, h('span', { class: 'muted', text: extra.charAt(0).toUpperCase() + extra.slice(1) + '.' }))]);
     return box;
@@ -123,6 +128,9 @@ function chipInput(initial, placeholder) {
         draw();
     };
     input.addEventListener('keydown', (e) => {
+        // Con un IME (chino, japonés, coreano…) Enter confirma la conversión: no es nuestro.
+        // keyCode 229 cubre a Safari, que a veces informa isComposing tarde.
+        if (e.isComposing || e.keyCode === 229) return;
         if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); }
         else if (e.key === 'Backspace' && !input.value && items.length) { items.pop(); draw(); }
     });
@@ -252,9 +260,15 @@ function openRules(id) {
     const manual = h('input', { type: 'text', placeholder: 'O añade un id: 34600000000, …@c.us, …@g.us' });
     const loadBtn = h('button', { type: 'button', class: 'btn ghost sm' });
     const source = () => (tab === 'groups' ? S.groups[id] : S.contacts[id]);
-    const drawTabs = () => tabs.replaceChildren(
-        h('button', { type: 'button', class: tab === 'groups' ? 'active' : '', onclick: () => { tab = 'groups'; drawTabs(); drawList(); } }, 'Grupos', h('span', { class: 'count-pill', text: String(sel.groups.size || 'todos') })),
-        h('button', { type: 'button', class: tab === 'users' ? 'active' : '', onclick: () => { tab = 'users'; drawTabs(); drawList(); } }, 'Personas', h('span', { class: 'count-pill', text: String(sel.users.size || 'todas') })));
+    const drawTabs = () => renderTabs(tabs, {
+        label: 'Dónde y a quién',
+        selected: tab,
+        items: [
+            { key: 'groups', content: ['Grupos', h('span', { class: 'count-pill', text: String(sel.groups.size || 'todos') })], panel: list },
+            { key: 'users', content: ['Personas', h('span', { class: 'count-pill', text: String(sel.users.size || 'todas') })], panel: list },
+        ],
+        onSelect: (k) => { tab = k; drawTabs(); drawList(); },
+    });
     function drawList() {
         const set = sel[tab];
         const src = source() || [];
@@ -283,6 +297,7 @@ function openRules(id) {
     manual.addEventListener('keydown', (e) => {
         if (e.key !== 'Enter') return;
         e.preventDefault();
+        if (e.isComposing || e.keyCode === 229) return; // Enter del IME, no de añadir
         let v = manual.value.trim().replace(/\s+/g, '');
         if (/^\+?\d{6,}$/.test(v)) v = v.replace('+', '') + '@c.us';
         if (!CHAT_ID.test(v)) return toast('Formato no válido: número, …@c.us o …@g.us', 'err');
@@ -321,6 +336,22 @@ function openRules(id) {
     // --- tiempos y opciones ---
     const delay = h('input', { type: 'number', min: 0, step: 0.5, value: c.reply_delay_ms / 1000 });
     const cool = h('input', { type: 'number', min: 0, step: 1, value: c.cooldown_ms / 1000 });
+    const coolScope = h('select', {},
+        h('option', { value: 'group', text: 'en cada grupo' }),
+        h('option', { value: 'global', text: 'en total (todos los grupos)' }));
+    coolScope.value = c.cooldown_scope === 'global' ? 'global' : 'group';
+    const coolNote = h('div', { class: 'hint' });
+    const updCool = () => {
+        const s = Math.round(parseFloat(cool.value) || 0);
+        coolScope.disabled = !s;
+        coolNote.textContent = !s ? 'Sin límite: responde a todos los mensajes que cumplan las reglas.'
+            : coolScope.value === 'global'
+                ? `Tras responder en cualquier grupo, no vuelve a responder en ninguno durante ${s} s.`
+                : `Tras responder en un grupo, no vuelve a responder en ese mismo grupo durante ${s} s; en los demás sí.`;
+    };
+    cool.addEventListener('input', updCool);
+    coolScope.addEventListener('change', updCool);
+    updCool();
     const debug = h('input', { type: 'checkbox', checked: c.debug });
     const mobile = h('input', { type: 'checkbox', checked: !c.suppress_mobile_notifications });
     const show = h('input', { type: 'checkbox', checked: c.headless === false });
@@ -333,6 +364,7 @@ function openRules(id) {
         schedule: schedValue(),
         reply_delay_ms: Math.max(0, Math.round((parseFloat(delay.value) || 0) * 1000)),
         cooldown_ms: Math.max(0, Math.round((parseFloat(cool.value) || 0) * 1000)),
+        cooldown_scope: coolScope.value,
         debug: debug.checked,
         suppress_mobile_notifications: !mobile.checked,
         headless: !show.checked,
@@ -347,7 +379,7 @@ function openRules(id) {
         const fresh = await api.get(api.inst(id, 'config')); // conservar claves que no edita el panel
         S.cfg[id] = await api.put(api.inst(id, 'config'), { ...fresh, ...v });
         S.columns[id].refreshRules();
-        drawer.close(true);
+        await drawer.close(true); // cerrado del todo antes del aviso (si no, iría dentro del panel)
         toast('Reglas guardadas · se aplican al momento');
     }));
 
@@ -362,7 +394,9 @@ function openRules(id) {
                 h('div', { class: 'days' }, ...dayBtns),
                 h('div', { class: 'pair' }, field('Desde', from), field('Hasta', to)),
                 schedNote, h('div', {}, clearSched)),
-            section('Tiempos', null, h('div', { class: 'pair' }, field('Esperar antes de responder (s)', delay, '0 = al instante'), field('Máx. 1 respuesta por grupo cada (s)', cool, '0 = sin límite'))),
+            section('Tiempos', null,
+                h('div', { class: 'pair' }, field('Esperar antes de responder (s)', delay, '0 = al instante'), field('Máx. 1 respuesta cada (s)', cool, '0 = sin límite')),
+                field('Contar ese límite', coolScope), coolNote),
             section('Opciones', null,
                 sw(mobile, 'Notificaciones en el móvil', 'El móvil sigue avisando aunque el bot esté conectado'),
                 sw(debug, 'Registrar todos los mensajes', 'Guarda en el registro técnico también los que no disparan respuesta'),

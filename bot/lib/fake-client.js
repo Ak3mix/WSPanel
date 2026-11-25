@@ -21,6 +21,9 @@ class FakeClient extends EventEmitter {
         this.replies = [];
         this.lookups = 0;
         this.authStrategy = { logout: async () => {} };
+        this.sendMode = 'ok';
+        this.state = 'CONNECTED';
+        this.seq = 0;
     }
 
     async initialize() {
@@ -51,7 +54,17 @@ class FakeClient extends EventEmitter {
         );
     }
 
-    async sendMessage(to, text) { this.sent.push({ to, text }); }
+    // Como whatsapp-web.js: devuelve el mensaje creado; ack 1 = el servidor lo recibió.
+    // `sendMode`: 'ok' | 'fail' (lanza) | 'hang' (nunca termina) | 'pending' (ack 0 sin confirmar)
+    _send(to, text) {
+        if (this.sendMode === 'fail') return Promise.reject(new Error('fallo simulado al enviar'));
+        if (this.sendMode === 'hang') return new Promise(() => {});
+        const id = { _serialized: `fake_${++this.seq}` };
+        return Promise.resolve({ id, to, body: text, ack: this.sendMode === 'pending' ? 0 : 1 });
+    }
+
+    async sendMessage(to, text) { this.sent.push({ to, text }); return this._send(to, text); }
+    async getState() { return this.state; }
     async sendPresenceUnavailable() {}
     async logout() {}
     async destroy() {}
@@ -61,7 +74,8 @@ class FakeClient extends EventEmitter {
         const group = this.groups.find((g) => g.id === from);
         const msg = {
             from, author, body, fromMe,
-            reply: async (text) => { this.replies.push({ to: from, text }); },
+            timestamp: Math.floor(Date.now() / 1000),
+            reply: async (text) => { this.replies.push({ to: from, text }); return this._send(from, text); },
             getChat: async () => ({ id: { _serialized: from }, name: group ? group.name : from, isGroup: true }),
         };
         this.emit('message_create', msg);

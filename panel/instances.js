@@ -15,7 +15,7 @@ const INSTANCES = Object.freeze([
 // Debe coincidir con EXIT de bot/lib/bot-core.js
 const EXIT_STATUS = { 4: 'logged_out', 5: 'auth_failure', 78: 'config_error', 79: 'browser_missing' }; // no se reintentan
 
-const RPC_TIMEOUTS = { FETCH_CONTACTS: 120000, FETCH_GROUPS: 90000, LOGOUT: 30000 };
+const RPC_TIMEOUTS = { FETCH_CONTACTS: 120000, FETCH_GROUPS: 90000, LOGOUT: 30000, SEND_MESSAGE: 60000 }; // el bot espera la confirmación hasta 45 s
 
 class InstanceManager extends EventEmitter {
     constructor({

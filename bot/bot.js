@@ -66,6 +66,9 @@ function createRealClient(cfg, { clientId, dataPath }) {
     const { Client, LocalAuth } = require('whatsapp-web.js');
     return new Client({
         authStrategy: new LocalAuth({ ...(clientId ? { clientId } : {}), dataPath }),
+        // tiempo para que WhatsApp Web termine de cargar (por defecto 30 s: poco con
+        // una red o un PC lentos, y la cuenta caía con "auth timeout")
+        authTimeoutMs: 120000,
         puppeteer: {
             headless: cfg.headless,
             executablePath,

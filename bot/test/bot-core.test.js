@@ -32,7 +32,7 @@ function setup(cfgOverrides = {}, { lids = { '900@lid': '34600000001@c.us' }, pa
 
 const send = (bot, m) => bot.handleMessage({
     fromMe: false,
-    reply: async function (t) { this.replied = t; },
+    reply: async function (t) { this.replied = t; return { id: { _serialized: 'r' + Math.random() }, ack: 1 }; },
     getChat: async () => ({ name: 'Grupo Uno' }),
     ...m,
 });

@@ -74,10 +74,17 @@ function latencyBadge(it) {
     if (!Number.isFinite(it.latency_ms)) return null; // respuestas antiguas, sin medir
     const delay = Number.isFinite(it.delay_ms) ? it.delay_ms : 0;
     const work = Math.max(0, it.latency_ms - delay);
-    const title = delay
-        ? `Respondió ${fmtMs(it.latency_ms)} después de recibir el mensaje: ${fmtMs(delay)} de espera configurada + ${fmtMs(work)} de proceso.`
+    let detail = delay
+        ? `Respondió ${fmtMs(it.latency_ms)} después de recibir el mensaje: ${fmtMs(delay)} de espera configurada + ${fmtMs(work)} de envío.`
         : `Respondió ${fmtMs(it.latency_ms)} después de recibir el mensaje.`;
-    return h('span', { class: `latency ${work > 3000 ? 'slow' : ''}`, title, 'aria-label': title }, `⏱ ${fmtMs(it.latency_ms)}`);
+    // el mensaje ya llegó tarde al bot (red, reconexión o mensaje que tardó en descifrarse)
+    if (Number.isFinite(it.age_ms) && it.age_ms >= 10000) detail += ` El mensaje llegó al bot ${fmtMs(it.age_ms)} después de escribirse.`;
+    if (it.delivery === 'unconfirmed') detail += ' WhatsApp no confirmó el envío: comprueba que aparece en el grupo.';
+    // tooltip accesible (no title): llega también a teclado y móvil
+    return hintTrigger({
+        text: `⏱ ${fmtMs(it.latency_ms)}`, hint: detail,
+        className: `latency ${work > 3000 || it.delivery === 'unconfirmed' ? 'slow' : ''}`, label: `Tiempo de respuesta: ${fmtMs(it.latency_ms)}`,
+    });
 }
 
 // Resalta la keyword dentro del texto original (sin distinguir acentos)
@@ -95,63 +102,256 @@ function highlight(text, kw) {
     return [text.slice(0, a), h('mark', { text: text.slice(a, b) }), text.slice(b)];
 }
 
-// ---------- panel lateral ----------
+// ---------- panel lateral (<dialog> modal nativo) ----------
+// showModal() deja la página inerte, contiene el foco, gestiona Esc y el gesto
+// «atrás», y al cerrar devuelve el foco al botón que lo abrió.
+
+const drawerEl = $('#drawer');
+
+// ¿Anima el navegador la salida de la capa superior? (Firefox/Safari aún no:
+// en ese caso se anima con [data-closing] y se cierra al terminar)
+let displayTransitionOk;
+function canTransitionDisplay() {
+    if (displayTransitionOk !== undefined) return displayTransitionOk;
+    if (!window.CSS?.supports?.('transition-behavior', 'allow-discrete')) return (displayTransitionOk = false);
+    const probe = document.createElement('div');
+    probe.style.cssText = 'transition: display 1s allow-discrete !important; display: block;';
+    document.body.append(probe);
+    getComputedStyle(probe).display;
+    probe.style.display = 'none';
+    displayTransitionOk = getComputedStyle(probe).display === 'block';
+    probe.remove();
+    return displayTransitionOk;
+}
+async function closeTopLayer(el) {
+    if (!(window.CSS?.supports?.('overlay', 'auto') && canTransitionDisplay())) {
+        el.setAttribute('data-closing', '');
+        const anims = el.getAnimations({ subtree: true });
+        if (anims.length) await Promise.race([Promise.allSettled(anims.map((a) => a.finished)), new Promise((r) => setTimeout(r, 1000))]);
+        if (!el.hasAttribute('data-closing')) return; // se volvió a abrir mientras tanto
+        el.removeAttribute('data-closing');
+    }
+    el.close();
+}
 
 const drawer = {
     dirty: null,
+    get isOpen() { return drawerEl.open; },
     open(title, { body, foot, acc = 'acc-default', isDirty, focus } = {}) {
         $('#drawer-title').textContent = title;
         $('#drawer-body').replaceChildren(...[].concat(body || []));
         $('#drawer-foot').replaceChildren(...[].concat(foot || []));
-        $('.drawer-panel').className = `drawer-panel ${acc}`;
+        $('#drawer-status').replaceChildren();
+        drawerEl.className = `drawer ${acc}`;
+        drawerEl.removeAttribute('data-closing');
         this.dirty = isDirty || null;
-        $('#drawer').classList.add('open');
-        $('#drawer').setAttribute('aria-hidden', 'false');
+        // Clave estable del botón que lo abrió: si mientras tanto se redibuja (la
+        // cabecera lo hace cada 30 s), al cerrar se devuelve el foco a su sustituto.
+        if (!drawerEl.open) this.returnKey = document.activeElement?.closest?.('[data-fk]')?.dataset.fk || null;
+        if (!drawerEl.open) drawerEl.showModal();
         $('#drawer-body').scrollTop = 0;
-        if (focus) setTimeout(() => focus.focus({ preventScroll: true }), 260);
+        // showModal() ya enfoca el primer control (Cerrar); si hay un campo principal, a él
+        if (focus) focus.focus({ preventScroll: true });
     },
     async close(force) {
+        if (!drawerEl.open) return true;
         if (!force && this.dirty && this.dirty()) {
             if (!(await confirmDialog('Hay cambios sin guardar. ¿Cerrar igualmente?', 'Descartar cambios'))) return false;
         }
-        $('#drawer').classList.remove('open');
-        $('#drawer').setAttribute('aria-hidden', 'true');
         this.dirty = null;
+        await closeTopLayer(drawerEl);
         return true;
     },
 };
 $('#drawer-close').addEventListener('click', () => drawer.close());
-$('#drawer').addEventListener('click', (e) => { if (e.target.id === 'drawer') drawer.close(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#drawer').classList.contains('open') && !$('#confirm').open) drawer.close(); });
+drawerEl.addEventListener('close', () => {
+    const key = drawer.returnKey;
+    drawer.returnKey = null;
+    // el navegador devuelve el foco al botón que abrió el panel; si ya no existe, al equivalente
+    setTimeout(() => {
+        if (key && (!document.activeElement || document.activeElement === document.body)) {
+            document.querySelector(`[data-fk="${CSS.escape(key)}"]`)?.focus();
+        }
+    });
+});
+// Esc / gesto atrás: pasar por close() para avisar de cambios sin guardar y animar.
+// (Si el navegador no deja cancelar —Esc repetido sin interacción—, cierra directamente.)
+drawerEl.addEventListener('cancel', (e) => {
+    if (!e.cancelable) return;
+    e.preventDefault();
+    drawer.close();
+});
+// Clic fuera del panel (sobre el fondo): se comprueba la posición, no event.target,
+// porque el propio <dialog> recibe también los clics en su relleno.
+{
+    const outside = (e) => {
+        const r = drawerEl.getBoundingClientRect();
+        return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    };
+    let pressedOutside = false;
+    drawerEl.addEventListener('pointerdown', (e) => { pressedOutside = outside(e); });
+    drawerEl.addEventListener('pointerup', (e) => { if (pressedOutside && outside(e)) drawer.close(); });
+}
 $('#btn-settings').addEventListener('click', () => openSettings());
 
 function section(title, desc, ...content) {
     return h('div', { class: 'section' }, h('h3', { text: title }), desc ? h('p', { class: 'desc', text: desc }) : null, ...content);
 }
 const field = (label, control, hint) => h('label', { class: 'field' }, h('span', { class: 'label', text: label }), control, hint ? h('span', { class: 'hint', text: hint }) : null);
-const sw = (input, title, sub) => h('label', { class: 'switch' }, input, h('span', { class: 't' }, h('b', { text: title }), sub ? h('span', { text: sub }) : null));
+// Interruptor: casilla con estilo propio + role="switch" (el atributo nativo
+// `switch` solo existe en Safari), así se anuncia «interruptor, activado».
+const sw = (input, title, sub) => {
+    input.setAttribute('role', 'switch');
+    return h('label', { class: 'switch' }, input, h('span', { class: 't' }, h('b', { text: title }), sub ? h('span', { text: sub }) : null));
+};
 
-// ---------- menú ⋯ ----------
+// ---------- popovers anclados (menú, tooltips) ----------
 
-let openMenu = null;
-function menuButton(itemsFn) {
-    const btn = h('button', { class: 'icon-btn', title: 'Más acciones', 'aria-label': 'Más acciones', text: '⋯' });
-    const wrap = h('div', { class: 'menu-wrap' }, btn);
-    btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const wasMine = openMenu && openMenu._owner === wrap;
-        if (openMenu) { openMenu.remove(); openMenu = null; }
-        if (wasMine) return; // segundo clic: cerrar
-        const menu = h('div', { class: 'menu', role: 'menu' }, ...itemsFn().map((it) => (it === '-' ? h('hr')
-            : h('button', { class: it.danger ? 'danger' : '', disabled: it.disabled, role: 'menuitem',
-                onclick: () => { menu.remove(); openMenu = null; it.run(); } }, it.icon || '', it.label))));
-        menu._owner = wrap;
-        wrap.append(menu);
-        openMenu = menu;
-    });
-    return wrap;
+// Sin anclaje CSS (Firefox): colocar el popover junto a su botón desde JS,
+// dándole la vuelta si no cabe y sin salirse de la ventana.
+const anchorCSS = window.CSS?.supports?.('position-area: block-end') ?? false;
+function placeNear(pop, anchor, { align = 'start', gap = 6 } = {}) {
+    if (anchorCSS) return;
+    const a = anchor.getBoundingClientRect();
+    Object.assign(pop.style, { position: 'fixed', inset: 'auto', margin: '0' });
+    const p = pop.getBoundingClientRect();
+    let left = align === 'end' ? a.right - p.width : align === 'center' ? a.left + (a.width - p.width) / 2 : a.left;
+    left = Math.max(8, Math.min(left, innerWidth - p.width - 8));
+    let top = a.bottom + gap;
+    if (top + p.height > innerHeight - 8 && a.top - gap - p.height >= 8) top = a.top - gap - p.height;
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
 }
-document.addEventListener('click', () => { if (openMenu) { openMenu.remove(); openMenu = null; } });
+
+// ---------- menú ⋯ (popover + focusgroup) ----------
+
+const focusgroupNative = 'focusGroup' in HTMLElement.prototype;
+const invokersNative = 'commandForElement' in HTMLButtonElement.prototype;
+let menuSeq = 0;
+
+function menuButton(itemsFn, { onClosed, focusKey } = {}) {
+    const mid = `menu-${++menuSeq}`;
+    const trigger = h('button', {
+        type: 'button', class: 'icon-btn menu-trigger', id: `${mid}-t`, title: 'Más acciones', 'aria-label': 'Más acciones',
+        'aria-haspopup': 'menu', 'aria-expanded': 'false', commandfor: mid, command: 'toggle-popover', text: '⋯',
+        dataset: focusKey ? { fk: focusKey } : undefined,
+    });
+    // focusgroup va en un hijo, no en el popover: Chromium perdería el teclado
+    const group = h('div', { class: 'menu-items', focusgroup: 'menu nomemory', 'aria-labelledby': `${mid}-t` });
+    const menu = h('div', { id: mid, class: 'menu', popover: 'auto' }, group);
+    const items = () => [...group.querySelectorAll('button')].filter((b) => !b.disabled);
+    let enterOnOpen = false;
+
+    const fill = () => {
+        group.replaceChildren(...itemsFn().map((it) => {
+            if (it === '-') return h('hr'); // separador nativo: focusgroup lo salta
+            const b = h('button', { type: 'button', class: it.danger ? 'danger' : '', disabled: it.disabled },
+                h('span', { class: 'mi-icon', 'aria-hidden': 'true', text: it.icon || '' }), it.label);
+            b.addEventListener('click', (e) => {
+                // devolver el foco al botón antes de cerrar (sin anillo si fue con el ratón)
+                trigger.focus({ focusVisible: e.detail === 0 });
+                menu.hidePopover();
+                it.run();
+            });
+            return b;
+        }));
+        if (!focusgroupNative) { // alternativa: roles explícitos (focusgroup los infiere solo)
+            group.setAttribute('role', 'menu');
+            group.querySelectorAll('button').forEach((b) => b.setAttribute('role', 'menuitem'));
+        }
+    };
+
+    menu.addEventListener('beforetoggle', (e) => { if (e.newState === 'open') fill(); });
+    menu.addEventListener('toggle', (e) => {
+        const open = e.newState === 'open';
+        trigger.setAttribute('aria-expanded', String(open)); // aria-expanded solo desde toggle
+        if (open) {
+            placeNear(menu, trigger, { align: 'end' });
+            if (enterOnOpen) items()[0]?.focus(); // solo al abrir con teclado
+        } else if (onClosed) onClosed();
+        enterOnOpen = false;
+    });
+    trigger.addEventListener('keydown', (e) => {
+        const isOpen = menu.matches(':popover-open');
+        if (e.key === 'Enter' || e.key === ' ') enterOnOpen = !isOpen;
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (isOpen) items()[0]?.focus();
+            else { enterOnOpen = true; trigger.click(); }
+        }
+    });
+    if (!invokersNative) { // sin command/commandfor: abrir y cerrar desde script
+        trigger.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (menu.matches(':popover-open')) menu.hidePopover();
+            else { if (e.detail === 0) enterOnOpen = true; menu.showPopover({ source: trigger }); }
+        });
+    }
+    // Home/End siempre; flechas solo si no hay focusgroup nativo
+    group.addEventListener('keydown', (e) => {
+        const keys = focusgroupNative ? ['Home', 'End'] : ['ArrowDown', 'ArrowUp', 'Home', 'End'];
+        if (!keys.includes(e.key)) return;
+        const list = items();
+        const cur = list.indexOf(document.activeElement);
+        if (cur < 0) return;
+        const next = e.key === 'Home' ? 0 : e.key === 'End' ? list.length - 1
+            : (cur + (e.key === 'ArrowUp' ? -1 : 1) + list.length) % list.length;
+        e.preventDefault();
+        list[next].focus({ preventScroll: true });
+    });
+    // al pasar el ratón, el elemento también recibe el foco (hover y foco son uno)
+    group.addEventListener('pointermove', (e) => {
+        const b = e.target.closest('button');
+        if (b && !b.disabled && document.activeElement !== b) b.focus({ focusVisible: false, preventScroll: true });
+    });
+    // inmediatamente después del botón: sin aria-details implícito
+    return h('div', { class: 'menu-wrap' }, trigger, menu);
+}
+
+// ---------- pestañas (focusgroup="tablist" + alternativa) ----------
+// items: [{ key, content: [...nodos], panel?: elemento }]. La selección sigue al
+// foco (flechas, Inicio, Fin). Con focusgroup nativo el navegador infiere los
+// roles tablist/tab; sin él se ponen a mano con tabindex itinerante.
+let tabSeq = 0;
+function renderTabs(container, { label, items, selected, onSelect }) {
+    const hadFocus = container.contains(document.activeElement);
+    container.setAttribute('aria-label', label);
+    container.setAttribute('focusgroup', 'tablist nomemory');
+    const btns = items.map((it) => {
+        const on = it.key === selected;
+        const b = h('button', { type: 'button', id: `tab-${++tabSeq}`, 'aria-selected': String(on), dataset: { key: it.key } }, ...[].concat(it.content));
+        if (on) {
+            b.setAttribute('focusgroupstart', ''); // al entrar con Tab, el foco cae en la seleccionada
+            if (it.panel) { it.panel.setAttribute('role', 'tabpanel'); it.panel.setAttribute('aria-labelledby', b.id); }
+        }
+        b.addEventListener('click', () => { if (!on) onSelect(it.key); });
+        return b;
+    });
+    if (!focusgroupNative) {
+        container.setAttribute('role', 'tablist');
+        btns.forEach((b) => { b.setAttribute('role', 'tab'); b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1; });
+    }
+    container.replaceChildren(...btns);
+    if (hadFocus) container.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
+    if (container._tabs) { container._tabs.onSelect = onSelect; return; }
+    container._tabs = { onSelect };
+    // con focusgroup nativo las flechas mueven el foco: seleccionar la pestaña enfocada
+    container.addEventListener('focusin', (e) => {
+        const b = e.target.closest('[data-key]');
+        if (b && b.getAttribute('aria-selected') !== 'true' && e.relatedTarget && container.contains(e.relatedTarget)) container._tabs.onSelect(b.dataset.key);
+    });
+    container.addEventListener('keydown', (e) => {
+        const keys = focusgroupNative ? ['Home', 'End'] : ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+        if (!keys.includes(e.key)) return;
+        const list = [...container.querySelectorAll('[data-key]')];
+        const cur = list.indexOf(document.activeElement);
+        if (cur < 0) return;
+        const next = e.key === 'Home' ? 0 : e.key === 'End' ? list.length - 1
+            : (cur + (e.key === 'ArrowLeft' ? -1 : 1) + list.length) % list.length;
+        e.preventDefault();
+        container._tabs.onSelect(list[next].dataset.key);
+    });
+}
 
 // ---------- columna de una cuenta ----------
 
@@ -172,7 +372,6 @@ function accountColumn(id) {
     col.append(hero, rules, activity);
 
     // --- cabecera: estado + interruptor + menú ---
-    const act = (fn) => () => withBusy(null, fn);
     const menuItems = () => {
         const i = inst(id);
         return [
@@ -180,14 +379,15 @@ function accountColumn(id) {
             { icon: '🧪', label: 'Probar reglas…', run: () => openTester(id) },
             { icon: '✉', label: 'Enviar mensaje…', run: () => openSend(id) },
             '-',
-            { icon: '↻', label: 'Reiniciar', disabled: !running(i.status), run: act(() => api.post(api.inst(id, 'restart'))) },
-            { icon: '■', label: 'Desconectar', disabled: !running(i.status) && i.status !== 'crashed', run: act(() => api.post(api.inst(id, 'stop'))) },
-            '-',
             { icon: '⎋', label: 'Cerrar sesión de WhatsApp', danger: true, disabled: i.status !== 'ready', run: () => logout(id) },
         ];
     };
 
+    let heroPending = false;
     function renderHero() {
+        // con el menú ⋯ abierto, redibujar lo cerraría: se pospone hasta que se cierre
+        if (hero.querySelector('.menu:popover-open')) { heroPending = true; return; }
+        heroPending = false;
         const i = inst(id);
         const [cls, text] = statusInfo(i, id);
         let ctrl;
@@ -198,7 +398,7 @@ function accountColumn(id) {
                 if (r && r.ok === false && r.reason === 'browser_missing') openSettings();
             }));
         } else {
-            const input = h('input', { type: 'checkbox', checked: !i.paused, 'aria-label': 'Auto-respuesta' });
+            const input = h('input', { type: 'checkbox', role: 'switch', checked: !i.paused, 'aria-label': 'Auto-respuesta' });
             input.addEventListener('change', () => withBusy(null, async () => {
                 try { await api.post(api.inst(id, 'pause'), { paused: !input.checked }); } catch (e) { input.checked = !input.checked; throw e; }
             }));
@@ -212,12 +412,28 @@ function accountColumn(id) {
                 h('div', { class: 'hero-main' },
                     h('div', { class: 'hero-name', text: i.name }),
                     h('div', { class: `hero-status ${cls}` }, h('span', { class: 'dot' }), text)),
-                h('div', { class: 'hero-ctrl' }, ctrl, menuButton(menuItems))),
+                h('div', { class: 'hero-ctrl' }, ctrl, menuButton(menuItems, { focusKey: `menu-${id}`, onClosed: () => { if (heroPending) setTimeout(renderHero); } }))),
             heroBody(i) || '',
+            heroActions(i) || '',
             h('div', { class: 'stats' },
                 h('div', { class: 'stat' }, h('div', { class: 'n', text: String(i.repliesToday || 0) }), h('div', { class: 'l', text: 'respuestas hoy' })),
                 h('div', { class: 'stat' }, h('div', { class: 'n', dataset: { ago: id }, text: ago(S.lastReply[id]) }), h('div', { class: 'l', text: 'última respuesta' })),
                 h('div', { class: 'stat' }, h('div', { class: 'n', text: S.cfg[id] ? (groups ? String(groups) : 'todos') : '·' }), h('div', { class: 'l', text: groups === 1 ? 'grupo vigilado' : 'grupos vigilados' }))));
+    }
+
+    // Desconectar / Reiniciar a la vista (antes solo en el menú ⋯). «Conectar» es el
+    // botón principal de la cabecera cuando está parada.
+    function heroActions(i) {
+        const canStop = running(i.status) || i.status === 'crashed';
+        if (!canStop) return null;
+        const btn = (icon, label, title, path, fk) => {
+            const b = h('button', { class: 'btn ghost sm', title, dataset: { fk } }, h('span', { 'aria-hidden': 'true', text: icon }), ` ${label}`);
+            b.addEventListener('click', () => withBusy(b, () => api.post(api.inst(id, path))));
+            return b;
+        };
+        return h('div', { class: 'hero-actions', role: 'group', 'aria-label': `Conexión de ${i.name}` },
+            running(i.status) ? btn('↻', 'Reiniciar', 'Cerrar y volver a abrir WhatsApp Web de esta cuenta', 'restart', `restart-${id}`) : null,
+            btn('■', 'Desconectar', 'Detener esta cuenta (no se reconectará sola al abrir el panel). La sesión se conserva: «Conectar» la vuelve a abrir sin QR.', 'stop', `stop-${id}`));
     }
 
     function heroBody(i) {
@@ -259,16 +475,22 @@ function accountColumn(id) {
     function renderRules() {
         rules.replaceChildren(
             h('div', { class: 'rules-head' }, h('h3', { class: 'grow', text: 'Reglas' }),
-                h('button', { class: 'btn ghost sm', text: '🧪 Probar', title: 'Probar qué haría el bot con un mensaje', onclick: () => openTester(id) }),
-                h('button', { class: 'btn ghost sm', text: 'Editar', onclick: () => openRules(id) })),
+                h('button', { class: 'btn ghost sm', text: '🧪 Probar', title: 'Probar qué haría el bot con un mensaje', dataset: { fk: `test-${id}` }, onclick: () => openTester(id) }),
+                h('button', { class: 'btn ghost sm', text: 'Editar', dataset: { fk: `rules-${id}` }, onclick: () => openRules(id) })),
             rulesSummary(id));
     }
 
     // --- actividad ---
-    const drawSeg = () => seg.replaceChildren(
-        h('button', { class: mode === 'conv' ? 'active' : '', text: 'Respuestas', onclick: () => { mode = 'conv'; drawSeg(); drawFeed(); } }),
-        h('button', { class: mode === 'log' ? 'active' : '', text: 'Registro', onclick: () => { mode = 'log'; drawSeg(); drawFeed(); } }),
-        h('button', { class: mode === 'stats' ? 'active' : '', text: 'Estadísticas', onclick: () => { mode = 'stats'; drawSeg(); drawFeed(); } }));
+    const drawSeg = () => renderTabs(seg, {
+        label: `Actividad de ${inst(id).name}`,
+        selected: mode,
+        items: [
+            { key: 'conv', content: 'Respuestas', panel: feed },
+            { key: 'log', content: 'Registro', panel: log },
+            { key: 'stats', content: 'Estadísticas', panel: stats.el },
+        ],
+        onSelect: (k) => { mode = k; drawSeg(); drawFeed(); },
+    });
 
     function feedNode(it) {
         if (it.type === 'notification' && it.event === 'auto_reply') {
@@ -276,10 +498,18 @@ function accountColumn(id) {
                 h('div', { class: 'ev-meta' }, h('span', { class: 'group', text: it.group || it.group_id || 'Grupo' }), '·', fmtTime(it.ts),
                     h('span', { class: 'ev-tags' },
                         it.rule && /^Regla \d+$/.test(it.rule) === false ? h('span', { class: 'rule-tag', text: it.rule }) : null,
+                        it.delivery === 'unconfirmed' ? h('span', { class: 'delivery-tag', text: '⚠️ sin confirmar' }) : null,
                         latencyBadge(it))),
                 h('div', { class: 'bubble in' }, h('span', { class: 'who', text: chatName(id, it.sender) || fmtPhone(it.sender) }),
                     ...(it.text ? highlight(it.text, it.keyword) : [h('i', { class: 'muted', text: `(contenía «${it.keyword}»)` })])),
                 h('div', { class: 'bubble out', text: it.reply }));
+        }
+        if (it.type === 'notification' && it.event === 'reply_failed') {
+            return h('div', { class: 'ev-reply failed' },
+                h('div', { class: 'ev-meta' }, h('span', { class: 'group', text: it.group || it.group_id || 'Grupo' }), '·', fmtTime(it.ts)),
+                h('div', { class: 'bubble in' }, h('span', { class: 'who', text: chatName(id, it.sender) || fmtPhone(it.sender) }),
+                    ...(it.text ? highlight(it.text, it.keyword) : [h('i', { class: 'muted', text: `(contenía «${it.keyword}»)` })])),
+                h('div', { class: 'reply-failed', role: 'note', text: `No se pudo responder${it.error ? `: ${it.error}` : ''}` }));
         }
         const sys = sysText(it);
         if (!sys) return null;
@@ -500,7 +730,7 @@ function openSettings() {
     const refreshTg = () => api.get('/api/telegram').then(drawTg).catch((e) => toast(e.message, 'err'));
     refreshTg();
     // el estado (escuchando / error) cambia solo: se refresca mientras el panel está abierto
-    const tgTimer = setInterval(() => { if ($('#drawer').classList.contains('open') && document.body.contains(tgState)) refreshTg(); else clearInterval(tgTimer); }, 4000);
+    const tgTimer = setInterval(() => { if (drawer.isOpen && document.body.contains(tgState)) refreshTg(); else clearInterval(tgTimer); }, 4000);
 
     // avisos del sistema (en este navegador)
     const notifSw = h('input', { type: 'checkbox', checked: notifyEnabled() });
@@ -581,12 +811,14 @@ function renderBanner() {
 }
 
 function renderSwitcher() {
-    const sw = $('#switcher');
-    sw.replaceChildren(...ids().map((id) => {
-        const [cls] = statusInfo(inst(id));
-        return h('button', { class: `${accClass(id)} ${S.current === id ? 'active' : ''}`, role: 'tab', 'aria-selected': S.current === id,
-            onclick: () => { S.current = id; renderSwitcher(); markCurrent(); } }, h('span', { class: `dot ${cls}` }), inst(id).name);
-    }));
+    renderTabs($('#switcher'), {
+        label: 'Cuenta',
+        selected: S.current,
+        items: ids().map((id) => ({ key: id, content: [h('span', { class: `dot ${statusInfo(inst(id))[0]}`, 'aria-hidden': 'true' }), inst(id).name] })),
+        onSelect: (k) => { S.current = k; renderSwitcher(); markCurrent(); },
+    });
+    // color de cada pestaña según su cuenta
+    $('#switcher').querySelectorAll('[data-key]').forEach((b) => b.classList.add(accClass(b.dataset.key)));
 }
 function markCurrent() {
     for (const [id, c] of Object.entries(S.columns)) c.el.classList.toggle('current', id === S.current);
@@ -628,7 +860,7 @@ function applyBot(id, ev) {
     } else if (ev.type === 'log' || ev.type === 'notification') {
         item = { ts: Date.now(), ...ev };
         pushItem(id, item);
-        if (ev.type === 'notification') {
+        if (ev.type === 'notification' && ev.event === 'auto_reply') {
             i.repliesToday = (i.repliesToday || 0) + 1;
             if (document.hidden && notifyEnabled()) {
                 try {

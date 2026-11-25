@@ -52,7 +52,8 @@ panel.mgr.on('event', (id, ev) => {
         console.log(`${p} Escanea este QR con el WhatsApp de la cuenta "${id}":`);
         if (qrTerminal && !fake) qrTerminal.generate(ev.qr, { small: true });
     } else if (ev.type === 'notification') {
-        console.log(`${p} 🤖 respondió en "${ev.group}" a ${ev.sender} (keyword: ${ev.keyword})`);
+        if (ev.event === 'reply_failed') console.log(`${p} ❌ no se pudo responder en "${ev.group}": ${ev.error}`);
+        else console.log(`${p} ${ev.delivery === 'unconfirmed' ? '⚠️ respondió (sin confirmar)' : '🤖 respondió'} en "${ev.group}" a ${ev.sender} (keyword: ${ev.keyword})`);
     } else if (ev.type === 'log') {
         if (!verbose && ['MESSAGE', 'FILTER', 'STDERR', 'CACHE'].includes(ev.tag)) return;
         console.log(`${p} [${ev.tag}] ${ev.msg}${ev.data !== undefined ? ' ' + JSON.stringify(ev.data) : ''}`);

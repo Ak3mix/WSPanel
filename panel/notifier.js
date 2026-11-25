@@ -24,7 +24,9 @@ const today = () => new Date().toISOString().slice(0, 10);
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 class Notifier {
-    constructor(tg, mgr, { getAllowedUserIds = () => [], windowMs = 60000, now = Date.now, countToday = null } = {}) {
+    // control = { start(id), stop(id), restart(id) } del panel (para los botones de /status)
+    constructor(tg, mgr, { getAllowedUserIds = () => [], windowMs = 60000, now = Date.now, countToday = null, control = null } = {}) {
+        this.control = control;
         this.countToday = countToday; // si el panel guarda el historial, el contador sale de ahí
         this.tg = tg;
         this.mgr = mgr;
@@ -51,8 +53,15 @@ class Notifier {
         if (!this.tg.configured) return;
         const l = this.label(id);
 
-        if (isReply) {
+        if (isReply && ev.delivery === 'unconfirmed') {
+            // no se agrupa: puede que el mensaje no haya salido
+            this.tg.sendSafe(`⚠️ [${l}] Respondió en "${ev.group || ev.group_id || '?'}", pero WhatsApp no confirmó el envío`
+                + `${ev.error ? ` (${ev.error})` : ''}. Comprueba que el mensaje aparece en el grupo.`);
+        } else if (isReply) {
             this.windowAutoReply(id, ev);
+        } else if (ev.type === 'notification' && ev.event === 'reply_failed') {
+            const quote = ev.text ? `\n«${clip(String(ev.text).replace(/\s+/g, ' ').trim(), 200)}»` : '';
+            this.tg.sendSafe(`❌ [${l}] No se pudo responder en "${ev.group || ev.group_id || '?'}"${ev.error ? `: ${ev.error}` : ''}${quote}`);
         } else if (ev.type === 'paused') {
             const v = Boolean(ev.value);
             const quietUntil = this.quietPause.get(id) || 0;
@@ -116,14 +125,90 @@ class Notifier {
         if (w.n > 1) this.tg.sendSafe(`🤖 [${w.label}] …y ${w.n - 1} respuesta${w.n === 2 ? '' : 's'} más en "${w.group}"`);
     }
 
+    _authorized(from) {
+        const allowed = (this.getAllowedUserIds() || []).map(String);
+        return !allowed.length || allowed.includes(String(from.id));
+    }
+
+    statusText() {
+        return this.mgr.defs.map(({ id }) => {
+            const st = this.mgr.getStatus(id);
+            const icon = st === 'ready' ? (this.mgr.isPaused(id) ? '⏸' : '🟢') : ['crashed', 'auth_failure', 'config_error', 'browser_missing'].includes(st) ? '🔴' : '⚪';
+            const paused = this.mgr.isPaused(id) ? ' · en pausa' : '';
+            const n = this.repliesToday(id);
+            return `${icon} ${this.label(id)}: ${STATUS_LABEL[st] || st}${paused} · ${n} respuesta${n === 1 ? '' : 's'} hoy`;
+        }).join('\n');
+    }
+
+    // Botones de /status según el estado de cada cuenta (callback_data "acción:id").
+    // Cerrar sesión no se ofrece aquí: obligaría a escanear el QR desde el panel.
+    statusKeyboard() {
+        const rows = [];
+        const running = (st) => !['stopped', 'crashed', 'logged_out', 'auth_failure', 'config_error', 'browser_missing'].includes(st);
+        for (const { id } of this.mgr.defs) {
+            const st = this.mgr.getStatus(id);
+            const l = this.label(id);
+            if (running(st)) {
+                const row = [];
+                if (st === 'ready') row.push(this.mgr.isPaused(id) ? { text: `▶️ Reanudar ${l}`, data: `resume:${id}` } : { text: `⏸ Pausar ${l}`, data: `pause:${id}` });
+                if (this.control) row.push({ text: `↻ Reiniciar ${l}`, data: `restart:${id}` });
+                if (row.length) rows.push(row);
+                if (this.control) rows.push([{ text: `■ Desconectar ${l}`, data: `stop:${id}` }]);
+            } else if (this.control && !['logged_out', 'auth_failure'].includes(st)) {
+                const row = [{ text: `🔌 Conectar ${l}`, data: `start:${id}` }];
+                if (st === 'crashed') row.push({ text: `■ Desconectar ${l}`, data: `stop:${id}` }); // deja de reintentar
+                rows.push(row);
+            }
+        }
+        rows.push([{ text: '🔄 Actualizar', data: 'refresh' }]);
+        return rows;
+    }
+
+    statusMessage() { return { text: this.statusText(), keyboard: this.statusKeyboard() }; }
+
+    // Botón pulsado en el mensaje de /status
+    async handleCallback(data, from = {}) {
+        if (!this._authorized(from)) return { toast: `⛔ No autorizado (tu id de Telegram es ${from.id})` };
+        const [action, id] = String(data).split(':');
+        const ids = this.mgr.defs.map((i) => i.id);
+        if (action === 'refresh') return { toast: 'Actualizado', ...this.statusMessage() };
+        if (!ids.includes(id)) return { toast: 'Cuenta desconocida' };
+        const l = this.label(id);
+        let toast;
+        try {
+            if (action === 'pause' || action === 'resume') {
+                const want = action === 'pause';
+                this.quietPause.set(id, this.now() + 5000); // el propio botón ya lo refleja
+                await this.mgr.setPaused(id, want);
+                this.lastPaused.set(id, want);
+                toast = want ? `⏸ ${l} en pausa` : `▶️ ${l} activa`;
+            } else if (this.control && action === 'start') {
+                const r = await this.control.start(id);
+                toast = r && r.ok === false
+                    ? (r.reason === 'browser_missing' ? `🌐 ${l}: no hay navegador, indícalo en el panel` : `❌ ${l}: ${r.reason}`)
+                    : `🔌 Conectando ${l}…`;
+            } else if (this.control && action === 'stop') {
+                await this.control.stop(id);
+                toast = `■ ${l} desconectada`;
+            } else if (this.control && action === 'restart') {
+                await this.control.restart(id);
+                toast = `↻ Reiniciando ${l}…`;
+            } else {
+                return { toast: 'Acción no disponible' };
+            }
+        } catch (e) {
+            toast = `❌ ${l}: ${e.message}`;
+        }
+        return { toast, ...this.statusMessage() };
+    }
+
     async handleCommand(text, from = {}) {
         const [rawCmd, ...args] = String(text).trim().split(/\s+/);
         if (!rawCmd.startsWith('/')) return null;
         const cmd = rawCmd.split('@')[0].toLowerCase(); // "/status@MiBot" → "/status"
         if (!['/status', '/pause', '/resume', '/help', '/start'].includes(cmd)) return null;
 
-        const allowed = (this.getAllowedUserIds() || []).map(String);
-        if (allowed.length && !allowed.includes(String(from.id))) {
+        if (!this._authorized(from)) {
             return `⛔ No autorizado. Tu id de Telegram es ${from.id}: añádelo en Ajustes del panel si debe poder usar los comandos.`;
         }
 
@@ -134,20 +219,12 @@ class Notifier {
         if (cmd === '/help' || cmd === '/start') {
             return [
                 'WSPanel — comandos:',
-                '/status — estado de las cuentas',
+                '/status — estado de las cuentas, con botones para pausar, reiniciar, conectar o desconectar',
                 `/pause ${ids.join('|')}|todos — dejar de responder`,
                 `/resume ${ids.join('|')}|todos — volver a responder`,
             ].join('\n');
         }
-        if (cmd === '/status') {
-            return ids.map((id) => {
-                const st = this.mgr.getStatus(id);
-                const icon = st === 'ready' ? (this.mgr.isPaused(id) ? '⏸' : '🟢') : ['crashed', 'auth_failure', 'config_error', 'browser_missing'].includes(st) ? '🔴' : '⚪';
-                const paused = this.mgr.isPaused(id) ? ' · en pausa' : '';
-                const n = this.repliesToday(id);
-                return `${icon} ${this.label(id)}: ${STATUS_LABEL[st] || st}${paused} · ${n} respuesta${n === 1 ? '' : 's'} hoy`;
-            }).join('\n');
-        }
+        if (cmd === '/status') return this.statusMessage();
         // /pause | /resume
         if (!targets) return `Uso: ${cmd} ${ids.join('|')}|todos`;
         const want = cmd === '/pause';

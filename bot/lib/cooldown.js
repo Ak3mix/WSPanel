@@ -20,6 +20,11 @@ class Cooldown {
         return true;
     }
 
+    clear() { this.last.clear(); }
+
+    // devuelve el hueco reservado (p. ej. si el envío falló)
+    release(key) { this.last.delete(key); }
+
     _prune(t) {
         for (const [k, v] of this.last) if (t - v >= this.ms) this.last.delete(k);
     }

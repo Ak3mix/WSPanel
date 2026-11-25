@@ -4,14 +4,24 @@ const fs = require('fs');
 const path = require('path');
 
 class LidResolver {
-    constructor({ lookup, cacheFile = null, negativeTtlMs = 10 * 60 * 1000, now = Date.now } = {}) {
-        this.lookup = lookup;
+    constructor({ lookup, cacheFile = null, negativeTtlMs = 10 * 60 * 1000, errorTtlMs = 30 * 1000, timeoutMs = 15000, now = Date.now } = {}) {
+        // Cada búsqueda tiene tiempo límite: si la página no contesta, una promesa
+        // colgada compartida dejaría sin respuesta para siempre a ese remitente.
+        this.lookup = (ids) => {
+            let timer;
+            const p = Promise.resolve().then(() => lookup(ids));
+            p.catch(() => {});
+            return Promise.race([p, new Promise((_, rej) => {
+                timer = setTimeout(() => rej(new Error('lookup timeout')), timeoutMs);
+            })]).finally(() => clearTimeout(timer));
+        };
+        this.errorTtlMs = errorTtlMs; // fallo de red/página: reintentar pronto
         this.cacheFile = cacheFile;
         this.negativeTtlMs = negativeTtlMs;
         this.now = now;
         this.lidToPn = new Map();
         this.pnToLid = new Map();
-        this.misses = new Map(); // lid -> timestamp del último fallo
+        this.misses = new Map(); // lid -> { at, ttl } del último fallo
         this.inflight = new Map(); // lid -> Promise (deduplica búsquedas simultáneas)
         this.saveTimer = null;
     }
@@ -62,18 +72,21 @@ class LidResolver {
         const hit = this.cachedPhone(id);
         if (hit || !id || !id.endsWith('@lid')) return hit;
         const miss = this.misses.get(id);
-        if (miss !== undefined && this.now() - miss < this.negativeTtlMs) return null;
+        if (miss !== undefined && this.now() - miss.at < miss.ttl) return null;
         if (this.inflight.has(id)) return this.inflight.get(id);
 
         const p = (async () => {
+            let ttl = this.negativeTtlMs; // WhatsApp no lo conoce
             try {
                 const [r] = (await this.lookup([id])) || [];
                 if (r && r.pn) {
                     this._store(r.lid || id, r.pn);
                     return r.pn;
                 }
-            } catch { /* red/página caída: tratar como fallo temporal */ }
-            this.misses.set(id, this.now());
+            } catch {
+                ttl = this.errorTtlMs; // red/página caída o sin respuesta: fallo temporal
+            }
+            this.misses.set(id, { at: this.now(), ttl });
             return null;
         })().finally(() => this.inflight.delete(id));
         this.inflight.set(id, p);

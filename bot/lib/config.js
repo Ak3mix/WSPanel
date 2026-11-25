@@ -18,7 +18,8 @@ const DEFAULTS = Object.freeze({
     // Horario opcional: días (0 = domingo … 6 = sábado) y tramo HH:MM. Vacío = siempre.
     schedule: { days: [], from: '', to: '' },
     reply_delay_ms: 1500,
-    cooldown_ms: 0, // 0 = sin límite; >0 = máx. 1 respuesta por grupo en esa ventana
+    cooldown_ms: 0, // 0 = sin límite; >0 = máx. 1 respuesta en esa ventana…
+    cooldown_scope: 'group', // …por grupo ('group') o en total, entre todos los grupos ('global')
     headless: true,
     chrome_path: '',
     suppress_mobile_notifications: false, // true = NO marcar presencia "unavailable"
@@ -83,6 +84,7 @@ function normalizeConfig(raw) {
         schedule: normalizeSchedule(r.schedule),
         reply_delay_ms: nonNegInt(r.reply_delay_ms, DEFAULTS.reply_delay_ms),
         cooldown_ms: nonNegInt(r.cooldown_ms, DEFAULTS.cooldown_ms),
+        cooldown_scope: r.cooldown_scope === 'global' ? 'global' : 'group',
         headless: r.headless !== false,
         chrome_path: typeof r.chrome_path === 'string' ? r.chrome_path.trim() : '',
         suppress_mobile_notifications: r.suppress_mobile_notifications === true,

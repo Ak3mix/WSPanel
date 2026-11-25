@@ -62,7 +62,7 @@ WSPanel/
 │   │   ├── lid.js           resolución @lid ↔ @c.us con caché persistente y negativa
 │   │   ├── config.js        validación y hot-reload de la configuración
 │   │   ├── browser.js       detección de Chrome, Chromium, Edge y Brave
-│   │   ├── cooldown.js      límite de respuestas por grupo
+│   │   ├── cooldown.js      límite de respuestas (por grupo o global)
 │   │   ├── protocol.js      JSON-lines por stdin/stdout
 │   │   └── fake-client.js   WhatsApp simulado para tests
 │   ├── patches/             parche de whatsapp-web.js (patch-package)
@@ -189,7 +189,8 @@ schedule:                      # opcional; vacío = siempre
   from: '08:00'                # admite tramos que cruzan medianoche (22:00 → 06:00)
   to: '18:00'
 reply_delay_ms: 1500           # espera antes de responder (0 = al instante)
-cooldown_ms: 0                 # máx. 1 respuesta por grupo en esa ventana (0 = sin límite)
+cooldown_ms: 0                 # máx. 1 respuesta en esa ventana (0 = sin límite)…
+cooldown_scope: group          # …por grupo (group) o en total, entre todos los grupos (global)
 debug: false                   # registrar cada mensaje recibido, texto incluido
 headless: true                 # navegador sin ventana
 chrome_path: ''                # navegador solo para esta cuenta (vacío = el del panel)

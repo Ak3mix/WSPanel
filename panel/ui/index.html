@@ -22,23 +22,30 @@
 <div id="banner" class="banner" hidden></div>
 <main id="board" class="board"></main>
 
-<aside id="drawer" class="drawer" aria-hidden="true">
-  <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
-    <header class="drawer-head">
-      <h2 id="drawer-title"></h2>
-      <button class="icon-btn" id="drawer-close" aria-label="Cerrar">✕</button>
-    </header>
-    <div class="drawer-body" id="drawer-body"></div>
-    <footer class="drawer-foot" id="drawer-foot"></footer>
-  </div>
-</aside>
+<!-- Panel lateral: <dialog> modal nativo (página inerte, foco contenido,
+     Esc / gesto atrás y el foco vuelve al botón que lo abrió). -->
+<dialog id="drawer" class="drawer" aria-labelledby="drawer-title">
+  <header class="drawer-head">
+    <h2 id="drawer-title"></h2>
+    <button type="button" class="icon-btn" id="drawer-close" aria-label="Cerrar">✕</button>
+  </header>
+  <div class="drawer-body" id="drawer-body"></div>
+  <!-- avisos mientras el panel está abierto (lo de fuera queda inerte) -->
+  <div id="drawer-status" class="drawer-status" role="status"></div>
+  <footer class="drawer-foot" id="drawer-foot"></footer>
+</dialog>
 
-<div id="toasts" aria-live="polite"></div>
-<dialog id="confirm">
+<!-- Avisos: siempre en el mismo sitio, como región con nombre. El anuncio a
+     lectores de pantalla va por ariaNotify() o por las regiones live ocultas. -->
+<div id="toasts" role="region" aria-label="Notificaciones"></div>
+<div class="visually-hidden" aria-live="polite" id="announce-polite"></div>
+<div class="visually-hidden" aria-live="assertive" id="announce-assertive"></div>
+<dialog id="confirm" aria-labelledby="confirm-text">
   <form method="dialog">
     <p id="confirm-text"></p>
     <div class="row end">
-      <button value="cancel" class="btn ghost">Cancelar</button>
+      <!-- autofocus en la acción segura: un Enter accidental no descarta nada -->
+      <button value="cancel" class="btn ghost" autofocus>Cancelar</button>
       <button value="ok" class="btn danger" id="confirm-ok">Confirmar</button>
     </div>
   </form>

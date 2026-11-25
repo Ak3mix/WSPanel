@@ -16,6 +16,7 @@ class TelegramError extends Error {
 }
 
 const isGroupChat = (chatId) => String(chatId).startsWith('-');
+const markup = (rows) => ({ inline_keyboard: rows.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) });
 
 class TelegramService {
     constructor(getCfg, {
@@ -101,10 +102,11 @@ class TelegramService {
     // ---------- envío en cola ----------
 
     // Encola un mensaje; la promesa se resuelve cuando se envía (o falla).
-    send(text, { replyTo } = {}) {
+    // keyboard = filas de botones [{ text, data }] (inline_keyboard de Telegram)
+    send(text, { replyTo, keyboard } = {}) {
         if (!this.configured) return Promise.reject(new TelegramError('Telegram no configurado'));
         return new Promise((resolve, reject) => {
-            this.queue.push({ text: String(text).slice(0, 4096), replyTo, resolve, reject });
+            this.queue.push({ text: String(text).slice(0, 4096), replyTo, keyboard, resolve, reject });
             while (this.queue.length > this.queueMax) {
                 const old = this.queue.shift();
                 this.dropped++;
@@ -135,6 +137,7 @@ class TelegramService {
                 try {
                     const body = { chat_id: chatId, text };
                     if (item.replyTo) body.reply_parameters = { message_id: item.replyTo, allow_sending_without_reply: true };
+                    if (item.keyboard) body.reply_markup = markup(item.keyboard);
                     await this.api('sendMessage', body);
                     this.dropped -= announced; // los descartados durante este envío se avisan en el siguiente
                     this.lastSentAt = Date.now();
@@ -164,8 +167,33 @@ class TelegramService {
         }).then(() => { if (this.gen === gen) this.wakeup = null; });
     }
 
-    // onCommand(text, from, chat) → Promise<string|null>
-    startPolling(onCommand) {
+    // Botón pulsado: se ejecuta la acción, se quita el "cargando" del botón con un
+    // aviso corto y se reescribe el mensaje con el estado nuevo.
+    async _onButton(cq, onButton, alive) {
+        const msg = cq.message;
+        const inChat = msg && msg.chat && String(msg.chat.id) === String(this.getCfg().chatId);
+        let r = null;
+        try {
+            r = inChat && onButton ? await onButton(String(cq.data || ''), cq.from || {}, msg) : null;
+        } catch (e) { this._fail(e); r = { toast: `❌ ${e.message}` }; }
+        if (!alive()) return;
+        try {
+            await this.api('answerCallbackQuery', { callback_query_id: cq.id, ...(r && r.toast ? { text: String(r.toast).slice(0, 200) } : {}) });
+        } catch (e) { this._fail(e); }
+        if (!r || !r.text || !inChat) return;
+        try {
+            await this.api('editMessageText', {
+                chat_id: msg.chat.id, message_id: msg.message_id, text: String(r.text).slice(0, 4096),
+                ...(r.keyboard ? { reply_markup: markup(r.keyboard) } : {}),
+            });
+        } catch (e) {
+            if (!/not modified/i.test(e.message)) this._fail(e); // mismo texto: nada que cambiar
+        }
+    }
+
+    // onCommand(text, from, chat) → Promise<string | { text, keyboard } | null>
+    // onButton(data, from, message) → Promise<{ toast?, text?, keyboard? } | null>
+    startPolling(onCommand, onButton) {
         if (this.running) return undefined;
         this.running = true;
         this.offset = 0; // el offset es de cada bot: no arrastrar el de un token anterior
@@ -187,7 +215,7 @@ class TelegramService {
                     }
                     const ups = await this.api(
                         'getUpdates',
-                        { offset: this.offset + 1, timeout: this.pollTimeoutS, allowed_updates: ['message'] },
+                        { offset: this.offset + 1, timeout: this.pollTimeoutS, allowed_updates: ['message', 'callback_query'] },
                         { signal: this.abort.signal, timeoutMs: (this.pollTimeoutS + 10) * 1000 }
                     );
                     failures = 0;
@@ -197,11 +225,13 @@ class TelegramService {
                     for (const u of ups) {
                         if (!alive()) return;
                         this.offset = Math.max(this.offset, u.update_id);
+                        if (u.callback_query) { await this._onButton(u.callback_query, onButton, alive); continue; }
                         const m = u.message;
                         if (!m || !m.text || !m.chat || String(m.chat.id) !== String(this.getCfg().chatId)) continue;
                         try {
                             const reply = await onCommand(m.text.trim(), m.from || {}, m.chat);
-                            if (reply && alive()) await this.sendSafe(reply, { replyTo: m.message_id });
+                            const { text, keyboard } = typeof reply === 'string' ? { text: reply } : reply || {};
+                            if (text && alive()) await this.sendSafe(text, { replyTo: m.message_id, keyboard });
                         } catch (e) { this._fail(e); }
                     }
                 } catch (e) {

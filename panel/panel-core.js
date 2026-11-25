@@ -60,6 +60,12 @@ function createPanel({ dataDir, botDir, fake = false, managerOptions = {}, brows
     const notifier = new Notifier(tg, mgr, {
         getAllowedUserIds: () => tgCfg().allowedUserIds,
         countToday: (id) => store.countToday(id),
+        // botones de /status en Telegram: mismas acciones que el panel
+        control: {
+            start: (id) => startInstance(id),
+            stop: (id) => actions.stop(id),
+            restart: (id) => actions.restart(id),
+        },
     });
 
     // ---------- preferencias por cuenta (se recuerdan entre arranques) ----------
@@ -116,7 +122,9 @@ function createPanel({ dataDir, botDir, fake = false, managerOptions = {}, brows
 
     function restartTelegram() {
         tg.stopPolling();
-        if (tg.configured) tg.startPolling((text, from) => notifier.handleCommand(text, from));
+        if (tg.configured) {
+            tg.startPolling((text, from) => notifier.handleCommand(text, from), (data, from) => notifier.handleCallback(data, from));
+        }
     }
 
     function setTelegramConfig({ token, chatId, allowedUserIds }) {

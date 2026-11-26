@@ -11,6 +11,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const MARK = 'WSPanel: generado por el panel'; // identifica los accesos que crea (y puede actualizar) WSPanel
+
 function createDesktop({
     appEntry = path.join(__dirname, 'app.js'),
     iconPath = path.join(__dirname, 'ui', 'icon.svg'),
@@ -45,6 +47,7 @@ function createDesktop({
         if (platform === 'linux') {
             const q = (s) => `"${String(s).replace(/(["\\\\`$])/g, '\\\\$1')}"`;
             return [
+                `# ${MARK}`,
                 '[Desktop Entry]',
                 'Type=Application',
                 'Name=WSPanel',
@@ -58,15 +61,60 @@ function createDesktop({
                 '',
             ].join('\n');
         }
-        // Windows: WScript.Shell.Run con 0 = sin ventana de consola
+        // Windows: WScript.Shell.Run con 0 = sin ventana de consola.
+        // Las rutas son absolutas: si la carpeta de WSPanel se mueve o se borra (p. ej.
+        // al actualizar a una versión descomprimida en otro sitio), en vez del error de
+        // Windows "no se puede encontrar la ruta" se explica qué pasó y se ofrece quitarlo.
+        // Al abrir WSPanel desde su carpeta nueva, refresh() reescribe estas rutas.
         const vbq = (s) => String(s).replace(/"/g, '""');
+        const what = background ? 'el arranque automático' : 'este acceso directo';
         return [
-            "' WSPanel: generado por el panel. Puedes borrarlo desde Ajustes.",
+            `' ${MARK}. Puedes borrarlo desde Ajustes.`,
+            'Set fso = CreateObject("Scripting.FileSystemObject")',
+            `dir = "${vbq(path.win32.dirname(appEntry))}"`,
+            `node = "${vbq(nodePath)}"`,
+            `app = "${vbq(appEntry)}"`,
+            'If Not fso.FileExists(node) Or Not fso.FileExists(app) Then',
+            '    r = MsgBox("No se encuentra WSPanel en:" & vbCrLf & dir & vbCrLf & vbCrLf & _',
+            '        "Seguramente esa carpeta se movió o se borró (por ejemplo, al actualizar). " & _',
+            `        "Abre WSPanel desde su carpeta actual y ${what} se corregirá solo." & vbCrLf & vbCrLf & _`,
+            `        "¿Quitar ${what} ahora?", vbExclamation + vbYesNo, "WSPanel")`,
+            '    If r = vbYes Then fso.DeleteFile WScript.ScriptFullName',
+            '    WScript.Quit 1',
+            'End If',
             'Set sh = CreateObject("WScript.Shell")',
-            `sh.CurrentDirectory = "${vbq(path.win32.dirname(appEntry))}"`,
-            `sh.Run """${vbq(nodePath)}"" ""${vbq(appEntry)}""${background ? ' --no-open' : ''}", 0, False`,
+            'sh.CurrentDirectory = dir',
+            `sh.Run """" & node & """ """ & app & """${background ? ' --no-open' : ''}", 0, False`,
             '',
         ].join('\r\n');
+    }
+
+    // Windows Script Host lee los .vbs en la codificación ANSI del sistema: en UTF-8
+    // una ruta con tildes o ñ se estropea. Con BOM UTF-16LE la lee bien.
+    const encode = (text) => (platform === 'win32'
+        ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')])
+        : Buffer.from(text, 'utf8'));
+    const decode = (buf) => (buf[0] === 0xff && buf[1] === 0xfe ? buf.subarray(2).toString('utf16le') : buf.toString('utf8'));
+
+    function write(kind, file) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, encode(content(kind)), { mode: platform === 'linux' ? 0o755 : 0o644 });
+    }
+
+    // Al arrancar: si hay accesos creados por WSPanel con otras rutas (carpeta movida
+    // o versión nueva en otro sitio), se actualizan a la ubicación actual.
+    // Devuelve los tipos reescritos.
+    function refresh() {
+        const ps = paths();
+        if (!ps) return [];
+        const fixed = [];
+        for (const kind of ['launcher', 'autostart']) {
+            let current;
+            try { current = decode(fs.readFileSync(ps[kind])); } catch { continue; } // no existe
+            if (!current.includes(MARK) || current === content(kind)) continue; // no es nuestro / ya al día
+            try { write(kind, ps[kind]); fixed.push(kind); } catch { /* sin permisos: no crítico */ }
+        }
+        return fixed;
     }
 
     function status() {
@@ -82,8 +130,7 @@ function createDesktop({
             if (want === undefined) continue;
             const file = ps[kind];
             if (want) {
-                fs.mkdirSync(path.dirname(file), { recursive: true });
-                fs.writeFileSync(file, content(kind), { mode: platform === 'linux' ? 0o755 : 0o644 });
+                write(kind, file);
             } else {
                 try { fs.unlinkSync(file); } catch { /* ya no estaba */ }
             }
@@ -91,7 +138,7 @@ function createDesktop({
         return status();
     }
 
-    return { status, set, supported, content };
+    return { status, set, supported, content, refresh };
 }
 
 // ---------- instancia única ----------

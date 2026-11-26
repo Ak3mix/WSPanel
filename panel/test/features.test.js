@@ -148,7 +148,12 @@ test('escritorio en Windows: scripts sin consola; macOS no soportado', () => {
     const home = tmp('wspanel-winhome-');
     const d = createDesktop({ platform: 'win32', home, env: { APPDATA: path.join(home, 'Roaming') }, nodePath: 'C:\\Program Files\\nodejs\\node.exe', appEntry: 'C:\\WSPanel\\panel\\app.js' });
     const vbs = d.content('autostart');
-    assert.match(vbs, /sh\.Run """C:\\Program Files\\nodejs\\node\.exe"" ""C:\\WSPanel\\panel\\app\.js"" --no-open", 0, False/);
+    assert.match(vbs, /node = "C:\\Program Files\\nodejs\\node\.exe"/);
+    assert.match(vbs, /app = "C:\\WSPanel\\panel\\app\.js"/);
+    assert.match(vbs, /sh\.Run """" & node & """ """ & app & """ --no-open", 0, False/);
+    // si la carpeta ya no existe: mensaje claro en vez del error de Windows, antes de tocar CurrentDirectory
+    assert.ok(vbs.indexOf('fso.FileExists(node)') < vbs.indexOf('sh.CurrentDirectory'));
+    assert.match(vbs, /MsgBox\("No se encuentra WSPanel/);
     assert.doesNotMatch(d.content('launcher'), /--no-open/);
     assert.equal(createDesktop({ platform: 'darwin' }).status().supported, false);
     fs.rmSync(home, { recursive: true, force: true });
@@ -207,4 +212,42 @@ test('API: /test, /stats, /desktop y /quit', async () => {
         await api.close(); await panel.shutdown();
         fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true });
     }
+});
+
+test('escritorio en Windows: .vbs en UTF-16 con BOM (rutas con ñ) y se repara al cambiar de carpeta', () => {
+    // las rutas de Windows no son rutas de verdad en Linux/macOS: se trabaja con una
+    // APPDATA relativa dentro de un directorio temporal para no dejar basura
+    const home = tmp('wspanel-winfix-');
+    const cwd = process.cwd();
+    process.chdir(home);
+    const env = { APPDATA: 'Roaming' };
+    const old = createDesktop({ platform: 'win32', home, env, nodePath: 'C:\\Descargas\\WSPanel-2.1.1\\node\\node.exe', appEntry: 'C:\\Descargas\\WSPanel-2.1.1\\app\\panel\\app.js' });
+    const st = old.set({ autostart: true });
+    const buf = fs.readFileSync(st.paths.autostart);
+    assert.deepEqual([...buf.subarray(0, 2)], [0xff, 0xfe]);
+    // versión nueva descomprimida en otra carpeta (con ñ)
+    const cur = createDesktop({ platform: 'win32', home, env, nodePath: 'C:\\Users\\Peña\\WSPanel\\node\\node.exe', appEntry: 'C:\\Users\\Peña\\WSPanel\\app\\panel\\app.js' });
+    assert.deepEqual(cur.refresh(), ['autostart']); // el acceso del menú no existía: no se crea
+    const text = fs.readFileSync(st.paths.autostart).subarray(2).toString('utf16le');
+    assert.match(text, /Peña\\WSPanel\\app\\panel\\app\.js/);
+    assert.doesNotMatch(text, /2\.1\.1/);
+    assert.deepEqual(cur.refresh(), [], 'ya al día');
+    assert.equal(fs.existsSync(path.join(env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'WSPanel.vbs')), false);
+    // un .vbs antiguo (UTF-8, versión 2.1.x) también se actualiza; uno ajeno no se toca
+    fs.writeFileSync(st.paths.autostart, "' WSPanel: generado por el panel. Puedes borrarlo desde Ajustes.\r\nSet sh = CreateObject(\"WScript.Shell\")\r\n");
+    assert.deepEqual(cur.refresh(), ['autostart']);
+    fs.writeFileSync(st.paths.autostart, "' mi propio script\r\n");
+    assert.deepEqual(cur.refresh(), []);
+    assert.equal(fs.readFileSync(st.paths.autostart, 'utf8'), "' mi propio script\r\n");
+    process.chdir(cwd);
+    fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('escritorio en Linux: el .desktop también se actualiza si cambió la carpeta', () => {
+    const home = tmp('wspanel-linfix-');
+    createDesktop({ platform: 'linux', home, env: {}, nodePath: '/opt/old/node', appEntry: '/opt/old/panel/app.js' }).set({ launcher: true });
+    const cur = createDesktop({ platform: 'linux', home, env: {}, nodePath: '/opt/new/node', appEntry: '/opt/new/panel/app.js' });
+    assert.deepEqual(cur.refresh(), ['launcher']);
+    assert.match(fs.readFileSync(path.join(home, '.local', 'share', 'applications', 'wspanel.desktop'), 'utf8'), /\/opt\/new\/panel\/app\.js/);
+    fs.rmSync(home, { recursive: true, force: true });
 });

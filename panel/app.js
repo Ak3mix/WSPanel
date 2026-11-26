@@ -71,11 +71,17 @@ async function main() {
         process.exit(0);
     }
 
+    const desktop = createDesktop();
+    if (!fake) {
+        // accesos directos / arranque automático que apuntaban a una carpeta anterior
+        const fixed = desktop.refresh();
+        if (fixed.length) console.log(`Actualizado a esta carpeta: ${fixed.map((k) => (k === 'autostart' ? 'arranque automático' : 'acceso directo')).join(' y ')}`);
+    }
     panel = createPanel({ dataDir: DATA_DIR, botDir: BOT_DIR, fake, version: VERSION });
     panel.startServices();
     api = await createApiServer(panel, {
         port,
-        desktop: createDesktop(),
+        desktop,
         onQuit: () => close(0),
     }).listen();
     writeLock(DATA_DIR, { port: api.port, token: api.token });
